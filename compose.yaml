@@ -1,0 +1,10 @@
+services:
+  vtoh:
+    build: .
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      VTOH_ASR_KEY: ${VTOH_ASR_KEY:?Set VTOH_ASR_KEY}
+      VTOH_CHAT_KEY: ${VTOH_CHAT_KEY:?Set VTOH_CHAT_KEY}
+      VTOH_ACCESS_KEY: ${VTOH_ACCESS_KEY:?Set VTOH_ACCESS_KEY}
+    restart: unless-stopped

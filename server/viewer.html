@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VtoH · 实时问答</title>
+<style>
+:root { color-scheme: light; font-family: Geist, "Microsoft YaHei", system-ui, sans-serif; color: #182c25; background: #f6f8f6; }
+body { max-width: 1000px; margin: auto; padding: clamp(20px, 5vw, 60px); }
+header { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #cdd9d1; }
+h1 { font-size: clamp(26px, 5vw, 38px); margin: 12px 0 20px; letter-spacing: -.04em; }
+h2 { margin: 0 0 20px; font-size: 18px; }
+#status { color: #185b43; font-size: 14px; }
+#error { color: #852b27; }
+main { display: grid; grid-template-columns: 3fr 2fr; gap: 36px; margin-top: 30px; }
+section { min-width: 0; }
+article { padding: 18px; background: white; border: 1px solid #dce5de; border-radius: 12px; margin: 0 0 12px; overflow-wrap: anywhere; }
+article h3 { margin: 0 0 10px; font-size: 17px; }
+article p { margin: 0; line-height: 1.65; }
+li { margin-top: 6px; }
+.pending, .empty { color: #52685e; }
+#transcripts p { padding-bottom: 12px; border-bottom: 1px solid #dce5de; line-height: 1.65; overflow-wrap: anywhere; }
+@media (max-width: 620px) { main { grid-template-columns: 1fr; gap: 24px; } }
+</style>
+<header><h1>实时问答</h1><span id="status" role="status">正在连接</span></header>
+<p id="error" role="alert" hidden></p>
+<main>
+  <section><h2>答案</h2><div id="answers"></div></section>
+  <section><h2>实时字幕</h2><div id="transcripts"></div></section>
+</main>
+<script>
+const pair = new URLSearchParams(location.hash.slice(1));
+const status = document.getElementById('status');
+const error = document.getElementById('error');
+const answers = new Map();
+const transcripts = new Map();
+let recording = false;
+let expired = false;
+let delay = 800;
+
+function element(tag, text, css) {
+  const node = document.createElement(tag);
+  if (text) node.textContent = text;
+  if (css) node.className = css;
+  return node;
+}
+
+function render() {
+  const answerItems = [...answers.values()].reverse().map(answer => {
+    const card = element('article');
+    card.append(element('h3', answer.question), element('p', answer.conclusion));
+    if (answer.points.length) {
+      const list = element('ul');
+      list.append(...answer.points.map(point => element('li', point)));
+      card.append(list);
+    }
+    return card;
+  });
+  const subtitleItems = [...transcripts.values()].reverse().map(row =>
+    element('p', row.text, row.final ? '' : 'pending'));
+  document.getElementById('answers').replaceChildren(
+    ...(answerItems.length ? answerItems : [element('p', '等待完整的问题。', 'empty')]));
+  document.getElementById('transcripts').replaceChildren(
+    ...(subtitleItems.length ? subtitleItems : [element('p', '等待电脑开始监听。', 'empty')]));
+}
+
+function connect() {
+  const url = new URL('sessions/' + pair.get('id') + '/watch', location.href);
+  url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('token', pair.get('token'));
+  const socket = new WebSocket(url);
+  socket.onmessage = ({ data }) => {
+    const event = JSON.parse(data);
+    if (event.type === 'snapshot') {
+      delay = 800;
+      error.hidden = true;
+      answers.clear();
+      transcripts.clear();
+      event.answers.forEach(row => answers.set(row.id, row));
+      event.transcripts.forEach(row => transcripts.set(row.id, row));
+      recording = event.recording;
+    }
+    if (event.type === 'capture') recording = event.recording;
+    if (event.type === 'transcript') {
+      transcripts.set(event.id, event);
+      if (transcripts.size > 250) transcripts.delete(transcripts.keys().next().value);
+    }
+    if (event.type === 'answer') {
+      answers.set(event.id, event);
+      if (answers.size > 120) answers.delete(answers.keys().next().value);
+    }
+    if (event.type === 'error') {
+      error.textContent = event.message;
+      error.hidden = false;
+    }
+    if (event.type === 'expired') expired = true;
+    status.textContent = expired ? '会话已结束' : recording ? '电脑正在监听' : '已连接 · 等待监听';
+    render();
+  };
+  socket.onclose = () => {
+    if (expired) return;
+    status.textContent = '连接中断 · 正在重连';
+    setTimeout(connect, delay);
+    delay = Math.min(delay * 2, 10000);
+  };
+}
+
+render();
+if (/^[0-9a-f]{32}$/.test(pair.get('id') || '') && pair.get('token')) connect();
+else status.textContent = '请扫描电脑上的配对码';
+</script>
+</html>
