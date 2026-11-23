@@ -120,12 +120,13 @@ class _WorkspaceState extends State<Workspace> {
 
   Uri _serverUri(String raw) {
     final uri = Uri.parse(raw.trim().replaceFirst(RegExp(r'/+$'), ''));
+    final path = uri.path.replaceFirst(RegExp(r'/+$'), '');
     if (!['https', 'http'].contains(uri.scheme) ||
         uri.host.isEmpty ||
         uri.hasFragment ||
         uri.hasQuery ||
         uri.userInfo.isNotEmpty ||
-        (uri.path.isNotEmpty && uri.path != _serverPrefix)) {
+        (path.isNotEmpty && path != _serverPrefix)) {
       throw const FormatException('请输入服务地址，例如 $_defaultServerUrl');
     }
     return uri.replace(path: _serverPrefix);

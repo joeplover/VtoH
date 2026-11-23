@@ -15,6 +15,7 @@ import httpx
 import qrcode
 from PIL import ImageTk
 from websockets.asyncio.client import connect
+from websockets.exceptions import InvalidStatus
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).parent
 SERVER_PREFIX = "/vtoh"
@@ -265,6 +266,10 @@ class Desktop:
                     failure = failure.exceptions[0]
                 if isinstance(failure, httpx.HTTPStatusError) and failure.response.status_code == 401:
                     message = "访问密钥有误"
+                elif isinstance(failure, InvalidStatus) and failure.response.status_code in (401, 403):
+                    message = "访问密钥有误，或 Nginx 没有转发 WebSocket"
+                elif isinstance(failure, InvalidStatus):
+                    message = f"WebSocket 连接失败（HTTP {failure.response.status_code}）"
                 elif isinstance(failure, RuntimeError) and not str(failure).startswith(("Task", "Cannot")):
                     message = str(failure)
                 else:
