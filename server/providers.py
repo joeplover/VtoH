@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import Protocol
@@ -8,6 +9,8 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, Field
 from websockets.asyncio.client import connect
+
+logger = logging.getLogger("vtoh")
 
 
 class Decision(BaseModel):
@@ -91,6 +94,7 @@ class DashScopeSpeech:
             }))
             started = json.loads(await asyncio.wait_for(socket.recv(), timeout=12))
             if started["header"]["event"] != "task-started":
+                logger.error("ASR task start rejected: %s", started)
                 raise RuntimeError("ASR start failed")
 
             async def send_audio() -> None:
@@ -108,6 +112,7 @@ class DashScopeSpeech:
                     event = json.loads(raw)
                     kind = event["header"]["event"]
                     if kind == "task-failed":
+                        logger.error("ASR task failed: %s", event)
                         raise RuntimeError("ASR task failed")
                     if kind == "task-finished":
                         await sender
@@ -118,7 +123,7 @@ class DashScopeSpeech:
                             yield str(sentence["begin_time"]), sentence["text"], sentence["sentence_end"]
                     if sender.done():
                         sender.result()
-                raise RuntimeError("ASR connection closed")
+                raise RuntimeError("ASR connection closed before task-finished")
             finally:
                 sender.cancel()
                 await asyncio.gather(sender, return_exceptions=True)

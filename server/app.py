@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import secrets
 from collections.abc import AsyncIterator
@@ -13,6 +14,8 @@ from fastapi.responses import FileResponse
 
 from .providers import Answers, ChatCompletions, DashScopeSpeech, Speech
 from .sessions import Session
+
+logger = logging.getLogger("vtoh")
 
 
 def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> FastAPI:
@@ -156,8 +159,9 @@ def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> Fas
                     session.put_transcript(f"{prefix}-{key}", text, final)
             await ws.send_json({"type": "stopped"})
         except (WebSocketDisconnect, OSError):
-            pass
+            logger.info("audio websocket disconnected for session %s", session.id)
         except Exception:
+            logger.exception("audio pipeline failed for session %s", session.id)
             session.publish({"type": "error", "message": "语音识别连接已中断，请检查服务配置或重新开始监听。"})
         finally:
             session.capture(False)
