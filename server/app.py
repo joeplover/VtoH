@@ -154,9 +154,10 @@ def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> Fas
 
         try:
             await ws.send_json({"type": "ready"})
-            async with asyncio.timeout(7200):
+            async def consume_speech() -> None:
                 async for key, text, final in speech.stream(frames()):
                     session.put_transcript(f"{prefix}-{key}", text, final)
+            await asyncio.wait_for(consume_speech(), timeout=7200)
             await ws.send_json({"type": "stopped"})
         except (WebSocketDisconnect, OSError):
             logger.info("audio websocket disconnected for session %s", session.id)
