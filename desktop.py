@@ -264,6 +264,8 @@ class Desktop:
             except Exception as failure:
                 while isinstance(failure, BaseExceptionGroup):
                     failure = failure.exceptions[0]
+                if isinstance(failure, InvalidStatus) and failure.response.status_code == 403:
+                    self.connection.session = None
                 if isinstance(failure, httpx.HTTPStatusError) and failure.response.status_code == 401:
                     message = "访问密钥有误"
                 elif isinstance(failure, InvalidStatus) and failure.response.status_code in (401, 403):
