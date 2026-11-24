@@ -1,9 +1,12 @@
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from server.app import create_app
 from server.providers import Decision
+from server.sessions import Session
 
 
 class Answers:
@@ -23,6 +26,38 @@ class Speech:
             text = frame.decode("utf-16-le")
             yield (str(text), text[:3], False)
             yield (str(text), text, True)
+
+
+def test_final_transcript_translation_is_shared_and_saved():
+    class Translator:
+        def __init__(self):
+            self.calls = []
+
+        async def translate(self, text, target):
+            self.calls.append((text, target))
+            return "The meeting starts now."
+
+    async def run():
+        translator = Translator()
+        session = Session(Answers(), translator)
+        owner = asyncio.Queue()
+        viewer = asyncio.Queue()
+        session.subscribers.update((owner, viewer))
+        session.put_transcript("1", "会议现在", False, "en")
+        session.put_transcript("1", "会议现在开始。", True, "en")
+        session.put_transcript("1", "会议现在开始。", True, "en")
+        await session.translation_worker
+        for queue in (owner, viewer):
+            assert queue.get_nowait()["final"] is False
+            assert queue.get_nowait()["translation_status"] == "pending"
+            translated = queue.get_nowait()
+            assert translated["id"] == "1"
+            assert translated["translation"] == "The meeting starts now."
+            assert translated["translation_language"] == "en"
+        assert session.snapshot()["transcripts"] == [translated]
+        assert translator.calls == [("会议现在开始。", "English")]
+
+    asyncio.run(run())
 
 
 def test_stream_pair_and_deduplicate():

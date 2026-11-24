@@ -16,11 +16,19 @@ class VtoHApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'VtoH · 实时问答',
+    debugShowCheckedModeBanner: false,
     theme: ThemeData(
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff246449)),
-      scaffoldBackgroundColor: const Color(0xfff5f8f5),
+      scaffoldBackgroundColor: const Color(0xfff2f5f3),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Color(0xfff2f5f3),
+        centerTitle: false,
+      ),
       inputDecorationTheme: const InputDecorationTheme(
         border: OutlineInputBorder(),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
       ),
     ),
     home: const Workspace(),
@@ -30,6 +38,18 @@ class VtoHApp extends StatelessWidget {
 typedef Event = Map<String, dynamic>;
 const _serverPrefix = '/vtoh';
 const _defaultServerUrl = 'https://www.ploverjoe.xyz/vtoh/';
+const _translationOptions = {
+  '': '关闭翻译',
+  'zh': '简体中文',
+  'en': '英语',
+  'ja': '日语',
+  'ko': '韩语',
+  'fr': '法语',
+  'es': '西班牙语',
+  'de': '德语',
+};
+
+enum WorkspaceView { subtitles, translation, answers }
 
 class Workspace extends StatefulWidget {
   const Workspace({super.key});
@@ -57,6 +77,9 @@ class _WorkspaceState extends State<Workspace> {
   bool _busy = false;
   bool _recording = false;
   bool _watching = false;
+  WorkspaceView _view = WorkspaceView.subtitles;
+  String _translationTarget = '';
+  String? _sessionKey;
   bool _remoteActive = false;
   bool _expired = false;
   double _level = 0;
@@ -132,10 +155,13 @@ class _WorkspaceState extends State<Workspace> {
     return uri.replace(path: _serverPrefix);
   }
 
-  Uri _ws(String path, String token) => _base!.replace(
+  Uri _ws(String path, String token, {String target = ''}) => _base!.replace(
     scheme: _base!.scheme == 'https' ? 'wss' : 'ws',
     path: '$_serverPrefix/sessions/$_id/$path',
-    queryParameters: {'token': token},
+    queryParameters: {
+      'token': token,
+      if (target.isNotEmpty) 'translate': target,
+    },
   );
 
   Uri get _pairUri => _base!.replace(
@@ -166,6 +192,7 @@ class _WorkspaceState extends State<Workspace> {
       _id = data['id'] as String;
       _owner = data['owner'] as String;
       _viewer = data['viewer'] as String;
+      _sessionKey = _key.text;
     } finally {
       client.close(force: true);
     }
@@ -296,14 +323,25 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   Future<void> _start() async {
+    if (_key.text.isEmpty &&
+        _serverUri(_defaultServerUrl).toString() ==
+            _server.text.trim().replaceFirst(RegExp(r'/+$'), '')) {
+      await _openSettings();
+      return;
+    }
     setState(() {
       _busy = true;
       _watching = false;
       _notice = '正在连接服务';
+      if (_translationTarget.isNotEmpty) _view = WorkspaceView.translation;
     });
     try {
       final base = _serverUri(_server.text);
-      if (_base != base || _owner == null || _expired || _attempts >= 8) {
+      if (_base != base ||
+          _owner == null ||
+          _sessionKey != _key.text ||
+          _expired ||
+          _attempts >= 8) {
         await _resetUpdates();
         await _createSession(base);
         await _connectUpdates(_generation);
@@ -312,7 +350,7 @@ class _WorkspaceState extends State<Workspace> {
       }
       if (!mounted) return;
       final audio = await WebSocket.connect(
-        _ws('audio', _owner!).toString(),
+        _ws('audio', _owner!, target: _translationTarget).toString(),
       ).timeout(const Duration(seconds: 12));
       if (!mounted) {
         await audio.close();
@@ -523,13 +561,19 @@ class _WorkspaceState extends State<Workspace> {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     final picking = !_recording && !_busy;
     final silence =
         _recording && DateTime.now().difference(_lastSound).inSeconds >= 4;
+    final state = _watching
+        ? (_remoteActive ? '电脑正在监听' : '电脑会话')
+        : _busy
+        ? (_recording ? '正在停止' : '正在处理')
+        : _recording
+        ? '正在监听'
+        : '待机';
     return Scaffold(
       appBar: AppBar(
-        title: const Text('实时问答'),
+        title: const Text('VtoH'),
         actions: [
           if (_owner != null && !_expired)
             IconButton(
@@ -537,30 +581,13 @@ class _WorkspaceState extends State<Workspace> {
               onPressed: _showPair,
               icon: const Icon(Icons.qr_code),
             ),
-          if (Platform.isAndroid && picking)
-            PopupMenuButton<String>(
-              tooltip: '加入电脑会话',
-              onSelected: (action) async {
-                if (action == 'scan') await _scan();
-                if (action == 'paste') await _paste();
-                if (action == 'leave') {
-                  await _resetUpdates();
-                  if (mounted) {
-                    setState(() {
-                      _watching = false;
-                      _remoteActive = false;
-                      _notice = '';
-                    });
-                  }
-                }
-              },
-              itemBuilder: (_) => [
-                const PopupMenuItem(value: 'scan', child: Text('扫码查看电脑问答')),
-                const PopupMenuItem(value: 'paste', child: Text('输入配对链接')),
-                if (_watching)
-                  const PopupMenuItem(value: 'leave', child: Text('退出电脑会话')),
-              ],
-            ),
+          if (Platform.isAndroid && picking) _pairMenu(),
+          IconButton(
+            tooltip: '设置',
+            onPressed: picking ? _openSettings : null,
+            icon: const Icon(Icons.settings_outlined),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
       body: SafeArea(
@@ -568,106 +595,72 @@ class _WorkspaceState extends State<Workspace> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1100),
             child: ListView(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
               children: [
-                if (!_watching) ...[
-                  TextField(
-                    controller: _server,
-                    enabled: picking,
-                    keyboardType: TextInputType.url,
-                    decoration: const InputDecoration(labelText: '服务地址'),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: _key,
-                    enabled: picking,
-                    obscureText: true,
-                    decoration: const InputDecoration(labelText: '访问密钥'),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          key: ValueKey(_source),
-                          initialValue: _sources.containsKey(_source)
-                              ? _source
-                              : null,
-                          decoration: const InputDecoration(labelText: '音源'),
-                          items: _sources.entries
-                              .map(
-                                (entry) => DropdownMenuItem(
-                                  value: entry.key,
-                                  child: Text(entry.value),
-                                ),
-                              )
-                              .toList(),
-                          onChanged: picking
-                              ? (value) => setState(() => _source = value!)
-                              : null,
-                        ),
-                      ),
-                      if (Platform.isWindows)
-                        IconButton(
-                          onPressed: picking ? _refresh : null,
-                          tooltip: '刷新音源',
-                          icon: const Icon(Icons.refresh),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: _busy
-                        ? null
-                        : _recording
-                        ? () async {
-                            setState(() => _busy = true);
-                            await _stop();
-                            if (mounted) setState(() => _busy = false);
-                          }
-                        : _start,
-                    icon: Icon(_recording ? Icons.stop : Icons.play_arrow),
-                    label: Text(_recording ? '停止监听' : '开始监听'),
-                  ),
-                  if (_recording)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      child: LinearProgressIndicator(
-                        value: _level,
-                        semanticsLabel: '输入电平',
-                      ),
-                    ),
-                ] else
-                  Text(_remoteActive ? '电脑正在监听' : '电脑会话'),
+                _capturePanel(state, picking),
                 if (_notice.isNotEmpty || silence)
                   Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    child: Text(
-                      _notice.isNotEmpty ? _notice : '持续无声，请检查音源。',
-                      style: TextStyle(color: scheme.primary),
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Semantics(
+                      liveRegion: true,
+                      child: Text(
+                        _notice.isNotEmpty ? _notice : '持续无声，请检查音源。',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
                     ),
                   ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 18),
                 LayoutBuilder(
                   builder: (context, bounds) {
-                    final subtitles = _subtitlePanel();
-                    final answers = _answerPanel();
-                    if (bounds.maxWidth < 720) {
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          answers,
-                          const SizedBox(height: 24),
-                          subtitles,
-                        ],
-                      );
-                    }
+                    final wide = bounds.maxWidth >= 720;
+                    final view = wide && _view == WorkspaceView.answers
+                        ? WorkspaceView.subtitles
+                        : _view;
+                    final content = Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        SegmentedButton<WorkspaceView>(
+                          showSelectedIcon: false,
+                          segments: [
+                            const ButtonSegment(
+                              value: WorkspaceView.subtitles,
+                              label: Text('字幕'),
+                            ),
+                            const ButtonSegment(
+                              value: WorkspaceView.translation,
+                              label: Text('翻译'),
+                            ),
+                            if (!wide)
+                              const ButtonSegment(
+                                value: WorkspaceView.answers,
+                                label: Text('问答'),
+                              ),
+                          ],
+                          selected: {view},
+                          onSelectionChanged: (values) =>
+                              setState(() => _view = values.first),
+                        ),
+                        const SizedBox(height: 12),
+                        switch (view) {
+                          WorkspaceView.subtitles => _subtitlePanel(
+                            showTitle: false,
+                          ),
+                          WorkspaceView.translation => _translationPanel(),
+                          WorkspaceView.answers => _answerPanel(
+                            showTitle: false,
+                          ),
+                        },
+                      ],
+                    );
+                    if (!wide) return content;
                     return Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(flex: 4, child: subtitles),
-                        const SizedBox(width: 24),
-                        Expanded(flex: 3, child: answers),
+                        Expanded(flex: 6, child: content),
+                        const SizedBox(width: 18),
+                        Expanded(flex: 5, child: _answerPanel()),
                       ],
                     );
                   },
@@ -680,33 +673,214 @@ class _WorkspaceState extends State<Workspace> {
     );
   }
 
-  Widget _subtitlePanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text('实时字幕', style: Theme.of(context).textTheme.titleLarge),
-          if (!_watching)
-            TextButton(
-              onPressed: _selected.isEmpty ? null : _manual,
-              child: const Text('回答这段'),
-            ),
-        ],
-      ),
-      if (_transcripts.isEmpty)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 14),
-          child: Text('等待转写。'),
+  Future<void> _openSettings() async {
+    final result = await Navigator.of(context).push<(String, String)>(
+      MaterialPageRoute(
+        builder: (_) => ConnectionSettings(
+          address: _server.text,
+          keyValue: _key.text,
+          validate: _serverUri,
         ),
-      for (final item in _transcripts.values.toList().reversed)
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _server.text = result.$1;
+      _key.text = result.$2;
+      _notice = '';
+    });
+  }
+
+  Widget _pairMenu() => PopupMenuButton<String>(
+    tooltip: '电脑会话',
+    icon: const Icon(Icons.devices),
+    onSelected: (action) async {
+      if (action == 'scan') await _scan();
+      if (action == 'paste') await _paste();
+      if (action == 'leave') {
+        await _resetUpdates();
+        if (mounted) {
+          setState(() {
+            _watching = false;
+            _remoteActive = false;
+            _notice = '';
+          });
+        }
+      }
+    },
+    itemBuilder: (_) => [
+      const PopupMenuItem(value: 'scan', child: Text('扫码查看电脑问答')),
+      const PopupMenuItem(value: 'paste', child: Text('输入配对链接')),
+      if (_watching) const PopupMenuItem(value: 'leave', child: Text('退出电脑会话')),
+    ],
+  );
+
+  Widget _capturePanel(String state, bool picking) {
+    final colors = Theme.of(context).colorScheme;
+    return _surface(
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Chip(
+            avatar: Icon(
+              _watching
+                  ? Icons.devices
+                  : _recording
+                  ? Icons.graphic_eq
+                  : Icons.circle_outlined,
+              size: 17,
+            ),
+            label: Text(state),
+            side: BorderSide.none,
+            backgroundColor: _recording || _remoteActive
+                ? colors.primaryContainer
+                : colors.surfaceContainer,
+          ),
+        ),
+        if (!_watching) ...[
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey(_source),
+                  initialValue: _sources.containsKey(_source) ? _source : null,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: '音源'),
+                  items: _sources.entries
+                      .map(
+                        (entry) => DropdownMenuItem(
+                          value: entry.key,
+                          child: Text(
+                            entry.value,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: picking
+                      ? (value) => setState(() => _source = value!)
+                      : null,
+                ),
+              ),
+              if (Platform.isWindows)
+                IconButton(
+                  onPressed: picking ? _refresh : null,
+                  tooltip: '刷新音源',
+                  icon: const Icon(Icons.refresh),
+                ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  initialValue: _translationTarget,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: '翻译为'),
+                  items: _translationOptions.entries
+                      .map(
+                        (entry) => DropdownMenuItem(
+                          value: entry.key,
+                          child: Text(
+                            entry.value,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: picking
+                      ? (value) {
+                          if (value == null) return;
+                          setState(() => _translationTarget = value);
+                        }
+                      : null,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _busy
+                ? null
+                : _recording
+                ? _stopFromPage
+                : _start,
+            icon: Icon(
+              _recording ? Icons.stop_rounded : Icons.play_arrow_rounded,
+            ),
+            label: Text(_recording ? '停止监听' : '开始监听'),
+          ),
+          if (_recording) ...[
+            const SizedBox(height: 10),
+            Text('输入电平', style: Theme.of(context).textTheme.labelMedium),
+            const SizedBox(height: 5),
+            LinearProgressIndicator(
+              value: _level,
+              borderRadius: BorderRadius.circular(9),
+              semanticsLabel: '输入电平',
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+
+  Future<void> _stopFromPage() async {
+    setState(() => _busy = true);
+    try {
+      await _stop();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _surface({required List<Widget> children}) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surface,
+      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: children,
+      ),
+    ),
+  );
+
+  Widget _subtitlePanel({bool showTitle = true}) => _surface(
+    children: [
+      if (showTitle || (!_watching && _selected.isNotEmpty))
+        Row(
+          children: [
+            Expanded(
+              child: showTitle
+                  ? Text('实时字幕', style: Theme.of(context).textTheme.titleLarge)
+                  : const SizedBox.shrink(),
+            ),
+            if (!_watching)
+              TextButton(
+                onPressed: _selected.isEmpty ? null : _manual,
+                child: Text(
+                  _selected.isEmpty ? '回答这段' : '回答这段（${_selected.length}）',
+                ),
+              ),
+          ],
+        ),
+      if (_transcripts.isEmpty)
+        _empty(
+          Icons.subtitles_outlined,
+          _watching ? '等待电脑转写。' : '开始监听后，字幕会显示在这里。',
+        ),
+      for (final item in _transcripts.values.toList().reversed) ...[
         if (_watching || item['final'] != true)
           ListTile(
+            contentPadding: EdgeInsets.zero,
             title: Text(item['text'] as String),
-            trailing: item['final'] == true ? null : const Text('转写中'),
+            subtitle: item['final'] == true ? null : const Text('转写中'),
           )
         else
           CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
             controlAffinity: ListTileControlAffinity.leading,
             title: Text(item['text'] as String),
             value: _selected.contains(item['id']),
@@ -719,42 +893,189 @@ class _WorkspaceState extends State<Workspace> {
               }
             }),
           ),
+        const Divider(height: 1),
+      ],
     ],
   );
 
-  Widget _answerPanel() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
+  Widget _answerPanel({bool showTitle = true}) => _surface(
     children: [
-      Text('答案', style: Theme.of(context).textTheme.titleLarge),
-      if (_answers.isEmpty)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 14),
-          child: Text('等待完整的问题。'),
-        ),
+      if (showTitle) Text('问答', style: Theme.of(context).textTheme.titleLarge),
+      if (_answers.isEmpty) _empty(Icons.question_answer_outlined, '等待完整的问题。'),
       for (final answer in _answers.values.toList().reversed)
-        Card(
-          margin: const EdgeInsets.only(top: 12),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  answer['question'] as String,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 8),
-                SelectableText(answer['conclusion'] as String),
-                for (final point in (answer['points'] as List<dynamic>))
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text('• $point'),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                answer['question'] as String,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              SelectableText(answer['conclusion'] as String),
+              for (final point in (answer['points'] as List<dynamic>))
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(right: 8),
+                        child: Text('•'),
+                      ),
+                      Expanded(child: SelectableText('$point')),
+                    ],
                   ),
-              ],
-            ),
+                ),
+              const SizedBox(height: 12),
+              const Divider(height: 1),
+            ],
           ),
         ),
     ],
+  );
+
+  Widget _translationPanel() {
+    final rows = _transcripts.values
+        .where((row) => row['translation_status'] != null)
+        .toList()
+        .reversed;
+    final theme = Theme.of(context);
+    return _surface(
+      children: [
+        if (rows.isEmpty)
+          _empty(
+            Icons.translate,
+            _watching
+                ? '等待电脑的译文。'
+                : _translationTarget.isEmpty
+                ? '选择目标语言后开始监听。'
+                : '每句字幕定稿后显示译文。',
+          ),
+        for (final row in rows) ...[
+          Text(
+            _translationOptions[row['translation_language']] ?? '',
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          SelectableText(
+            row['translation'] as String? ??
+                (row['translation_status'] == 'pending' ? '正在翻译…' : '暂无法翻译'),
+            style: theme.textTheme.titleMedium,
+          ),
+          const SizedBox(height: 6),
+          SelectableText(
+            row['text'] as String,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const Divider(height: 26),
+        ],
+      ],
+    );
+  }
+
+  Widget _empty(IconData icon, String message) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 24),
+    child: Column(
+      children: [
+        Icon(icon, color: Theme.of(context).colorScheme.primary),
+        const SizedBox(height: 8),
+        Text(message, textAlign: TextAlign.center),
+      ],
+    ),
+  );
+}
+
+class ConnectionSettings extends StatefulWidget {
+  const ConnectionSettings({
+    super.key,
+    required this.address,
+    required this.keyValue,
+    required this.validate,
+  });
+
+  final String address;
+  final String keyValue;
+  final Uri Function(String) validate;
+
+  @override
+  State<ConnectionSettings> createState() => _ConnectionSettingsState();
+}
+
+class _ConnectionSettingsState extends State<ConnectionSettings> {
+  late final _address = TextEditingController(text: widget.address);
+  late final _key = TextEditingController(text: widget.keyValue);
+  bool _showKey = false;
+  String? _error;
+
+  void _save() {
+    try {
+      final address = widget.validate(_address.text);
+      Navigator.pop(context, ('$address/', _key.text.trim()));
+    } on FormatException catch (error) {
+      setState(() => _error = error.message);
+    }
+  }
+
+  @override
+  void dispose() {
+    _address.dispose();
+    _key.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('连接设置')),
+    body: SafeArea(
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              TextField(
+                controller: _address,
+                keyboardType: TextInputType.url,
+                decoration: InputDecoration(
+                  labelText: '服务地址',
+                  errorText: _error,
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _key,
+                obscureText: !_showKey,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: InputDecoration(
+                  labelText: '访问密钥',
+                  suffixIcon: IconButton(
+                    tooltip: _showKey ? '隐藏密钥' : '显示密钥',
+                    onPressed: () => setState(() => _showKey = !_showKey),
+                    icon: Icon(
+                      _showKey
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              FilledButton(onPressed: _save, child: const Text('保存')),
+            ],
+          ),
+        ),
+      ),
+    ),
   );
 }
 

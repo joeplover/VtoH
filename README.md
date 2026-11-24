@@ -17,6 +17,8 @@ VtoH 将播放声音或麦克风音频转成实时字幕，在听到完整的问
 
 ## 在同一 Wi-Fi 下联调
 
+两端都通过右上角「设置」填写连接信息。开始监听前可在主界面选择「翻译为」；翻译默认关闭。开启后原文会实时转写，每句定稿后追加译文，Windows、Android 和配对网页共用译文。翻译使用百炼 `qwen-mt-flash`，默认复用 `VTOH_CHAT_KEY`，也可通过 `VTOH_TRANSLATION_KEY` 指定百炼密钥。若问答使用其他供应商的密钥，为翻译单独指定一个百炼密钥。开启翻译会产生模型调用费用。[百炼机器翻译](https://help.aliyun.com/zh/model-studio/qwen-mt)
+
 在 Windows PowerShell 中启动 Python 3.11 或更新版本的服务。将同一个百炼密钥赋给两个服务端变量。启动脚本也识别官方示例使用的 `DASHSCOPE_API_KEY`，以及环境中已有的 `AI_BAILIAN_API_KEY`。需要指定 ASR 业务空间时可通过 `VTOH_ASR_WORKSPACE` 传入工作空间 ID。未设置 `VTOH_ACCESS_KEY` 时，脚本会生成一个临时客户端访问密钥并显示在终端。
 
 ```powershell
@@ -26,7 +28,7 @@ $env:VTOH_CHAT_KEY = $env:VTOH_ASR_KEY
 .\scripts\start-service.ps1
 ```
 
-1. 打开 Windows 客户端，在服务地址中填写可被手机访问的 Windows 局域网地址，例如 `http://192.168.1.10:8765/vtoh/`。访问密钥填写启动脚本显示的客户端访问密钥。
+1. 打开 Windows 客户端的「设置」，将服务地址填为手机可访问的 Windows 局域网地址，例如 `http://192.168.1.10:8765/vtoh/`。访问密钥填写启动脚本显示的客户端访问密钥。
 2. 播放声音后点击「刷新音源」。选择正在发声的进程或默认播放设备，然后开始监听。选中已定稿的字幕可手动触发回答。
 3. 打开「手机配对」，用 Android 客户端或系统相机扫码。系统相机打开浏览器查看页。
 4. Android 独立模式下填写同一服务地址和访问密钥，选择「麦克风」或「应用播放声音」，在系统界面授权并开始监听。若手机访问不到 Windows 服务，检查两端是否在同一个可互访的 Wi-Fi，并允许专用网络入站 TCP 8765。

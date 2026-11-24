@@ -19,6 +19,7 @@ article p { margin: 0; line-height: 1.65; }
 li { margin-top: 6px; }
 .pending, .empty { color: #52685e; }
 #transcripts p { padding-bottom: 12px; border-bottom: 1px solid #dce5de; line-height: 1.65; overflow-wrap: anywhere; }
+#transcripts .translation { display: block; color: #185b43; margin-top: 4px; }
 @media (max-width: 620px) { main { grid-template-columns: 1fr; gap: 24px; } }
 </style>
 <header><h1>实时问答</h1><span id="status" role="status">正在连接</span></header>
@@ -55,8 +56,16 @@ function render() {
     }
     return card;
   });
-  const subtitleItems = [...transcripts.values()].reverse().map(row =>
-    element('p', row.text, row.final ? '' : 'pending'));
+  const subtitleItems = [...transcripts.values()].reverse().map(row => {
+    const subtitle = element('p', row.text, row.final ? '' : 'pending');
+    if (row.translation_status) {
+      const hint = row.translation_status === 'pending' ? '正在翻译…' : '暂无法翻译';
+      const translation = element('span', row.translation || hint, 'translation');
+      if (row.translation) translation.lang = row.translation_language;
+      subtitle.append(translation);
+    }
+    return subtitle;
+  });
   document.getElementById('answers').replaceChildren(
     ...(answerItems.length ? answerItems : [element('p', '等待完整的问题。', 'empty')]));
   document.getElementById('transcripts').replaceChildren(

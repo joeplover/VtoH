@@ -12,13 +12,18 @@ from uuid import uuid4
 from fastapi import APIRouter, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from .providers import Answers, ChatCompletions, DashScopeSpeech, Speech
+from .providers import (
+    Answers, ChatCompletions, DashScopeSpeech, QwenTranslation, Speech,
+    TRANSLATION_LANGUAGES, Translator,
+)
 from .sessions import Session
 
 logger = logging.getLogger("vtoh")
 
 
-def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> FastAPI:
+def create_app(
+    speech: Speech, answers: Answers, *, access_key: str = "", translator: Translator | None = None
+) -> FastAPI:
     sessions: dict[str, Session] = {}
 
     async def expire() -> None:
@@ -35,7 +40,8 @@ def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> Fas
         try:
             yield
         finally:
-            tasks = [cleanup, *(s.worker for s in sessions.values() if s.worker is not None)]
+            tasks = [cleanup, *(task for session in sessions.values()
+                                for task in (session.worker, session.translation_worker) if task is not None)]
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -66,7 +72,7 @@ def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> Fas
             raise HTTPException(401, "Invalid access key")
         if len(sessions) >= 100:
             raise HTTPException(503, "Session capacity reached")
-        session = Session(answers)
+        session = Session(answers, translator)
         sessions[session.id] = session
         return {"id": session.id, "owner": session.owner, "viewer": session.viewer}
 
@@ -133,6 +139,10 @@ def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> Fas
         if session.recording:
             await ws.close(code=1008)
             return
+        target = ws.query_params.get("translate", "")
+        if target and target not in TRANSLATION_LANGUAGES:
+            await ws.close(code=1008)
+            return
         session.capture(True)
         prefix = uuid4().hex[:12]
 
@@ -156,7 +166,7 @@ def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> Fas
             await ws.send_json({"type": "ready"})
             async def consume_speech() -> None:
                 async for key, text, final in speech.stream(frames()):
-                    session.put_transcript(f"{prefix}-{key}", text, final)
+                    session.put_transcript(f"{prefix}-{key}", text, final, target)
             await asyncio.wait_for(consume_speech(), timeout=7200)
             await ws.send_json({"type": "stopped"})
         except (WebSocketDisconnect, OSError):
@@ -171,4 +181,7 @@ def create_app(speech: Speech, answers: Answers, *, access_key: str = "") -> Fas
     return app
 
 
-app = create_app(DashScopeSpeech(), ChatCompletions(), access_key=os.getenv("VTOH_ACCESS_KEY", ""))
+app = create_app(
+    DashScopeSpeech(), ChatCompletions(),
+    access_key=os.getenv("VTOH_ACCESS_KEY", ""), translator=QwenTranslation(),
+)

@@ -28,6 +28,40 @@ class Speech(Protocol):
     def stream(self, frames: AsyncIterable[bytes]) -> AsyncIterator[tuple[str, str, bool]]: ...
 
 
+class Translator(Protocol):
+    async def translate(self, text: str, target: str) -> str: ...
+
+
+TRANSLATION_LANGUAGES = {
+    "zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean",
+    "fr": "French", "es": "Spanish", "de": "German",
+}
+
+
+class QwenTranslation:
+    async def translate(self, text: str, target: str) -> str:
+        key = (os.getenv("VTOH_TRANSLATION_KEY") or os.getenv("VTOH_CHAT_KEY")
+               or os.getenv("DASHSCOPE_API_KEY"))
+        if not key:
+            raise RuntimeError("Translation API key missing")
+        base = os.getenv("VTOH_TRANSLATION_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+        async with httpx.AsyncClient(timeout=12) as client:
+            response = await client.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": os.getenv("VTOH_TRANSLATION_MODEL", "qwen-mt-flash"),
+                    "messages": [{"role": "user", "content": text}],
+                    "translation_options": {"source_lang": "auto", "target_lang": target},
+                },
+            )
+            response.raise_for_status()
+            output = response.json()["choices"][0]["message"]["content"].strip()
+            if not output:
+                raise ValueError("Empty translation")
+            return output
+
+
 class ChatCompletions:
     async def decide(self, context: str, selected: str, manual: bool) -> Decision:
         key = os.getenv("VTOH_CHAT_KEY")
