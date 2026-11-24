@@ -9,6 +9,8 @@ from .providers import Answers, TRANSLATION_LANGUAGES, Translator
 
 Event = dict
 logger = logging.getLogger("vtoh")
+PARTIAL_TRANSLATION_INTERVAL = 1.0
+MAX_TRANSLATION_JOBS = 24
 
 
 class Session:
@@ -18,8 +20,9 @@ class Session:
         self.viewer = secrets.token_urlsafe(24)
         self.model = model
         self.translator = translator
-        self.translation_jobs: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue(24)
+        self.translation_jobs: OrderedDict[str, bool] = OrderedDict()
         self.translation_worker: asyncio.Task | None = None
+        self.next_partial_translation = 0.0
         self.updated = monotonic()
         self.recording = False
         self.transcripts: OrderedDict[str, Event] = OrderedDict()
@@ -54,37 +57,71 @@ class Session:
         event = {"type": "transcript", "id": key, "text": text[:4000], "final": final}
         if target:
             event["translation_language"] = target
-            if final:
-                if self.translator is None or self.translation_jobs.full():
-                    event["translation_status"] = "unavailable"
-                else:
-                    event["translation_status"] = "pending"
-                    self.translation_jobs.put_nowait((key, event["text"], target))
-                    if self.translation_worker is None or self.translation_worker.done():
-                        self.translation_worker = asyncio.create_task(self.translate_jobs(self.translator))
+            event["translation_final"] = False
+            if previous and previous.get("translation_language") == target and previous.get("translation"):
+                event["translation"] = previous["translation"]
+            if (event.get("translation") and previous["text"] == event["text"]
+                    and previous["translation_status"] == "ready"):
+                event["translation_status"] = "ready"
+                event["translation_final"] = final
+            elif self.translator is not None and self.queue_translation(key, final):
+                event["translation_status"] = "pending"
+            else:
+                event.pop("translation", None)
+                event["translation_status"] = "unavailable"
         self.transcripts[key] = event
         if len(self.transcripts) > 250:
-            self.transcripts.popitem(last=False)
+            expired, _ = self.transcripts.popitem(last=False)
+            self.translation_jobs.pop(expired, None)
         self.publish(event)
         if final:
             self.enqueue((key,), manual=False)
 
+    def queue_translation(self, key: str, final: bool) -> bool:
+        if key not in self.translation_jobs and len(self.translation_jobs) >= MAX_TRANSLATION_JOBS:
+            return False
+        self.translation_jobs[key] = final
+        if self.translation_worker is None or self.translation_worker.done():
+            self.translation_worker = asyncio.create_task(self.translate_jobs(self.translator))
+        return True
+
     async def translate_jobs(self, translator: Translator) -> None:
-        while not self.translation_jobs.empty():
-            key, text, target = self.translation_jobs.get_nowait()
-            if key not in self.transcripts:
-                continue
+        while self.translation_jobs:
+            key = next((key for key, final in self.translation_jobs.items() if final), None)
+            if key is None:
+                delay = self.next_partial_translation - monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                    continue
+                key = next(iter(self.translation_jobs))
+                self.next_partial_translation = monotonic() + PARTIAL_TRANSLATION_INTERVAL
+            self.translation_jobs.pop(key)
+            submitted = self.transcripts[key]
+            text = submitted["text"]
             try:
-                translation = await translator.translate(text, TRANSLATION_LANGUAGES[target])
-                update = {"translation": translation, "translation_status": "ready"}
+                language = TRANSLATION_LANGUAGES[submitted["translation_language"]]
+                translation = await translator.translate(text, language)
             except Exception as error:
                 logger.warning("translation failed for session %s: %s", self.id, type(error).__name__)
-                update = {"translation_status": "unavailable"}
+                translation = None
             row = self.transcripts.get(key)
-            if row is not None:
-                event = {**row, **update}
-                self.transcripts[key] = event
-                self.publish(event)
+            if row is None or (row["final"] and row["text"] != text):
+                continue
+            matches = row["text"] == text
+            if not matches and translation is None:
+                continue
+            event = {**row}
+            if translation is None:
+                event.pop("translation", None)
+                event["translation_status"] = "unavailable"
+            else:
+                event["translation"] = translation
+                event["translation_status"] = "ready" if matches else "pending"
+                event["translation_final"] = matches and row["final"]
+                if matches:
+                    self.translation_jobs.pop(key, None)
+            self.transcripts[key] = event
+            self.publish(event)
 
     def enqueue(self, ids: tuple[str, ...], *, manual: bool) -> None:
         finals = {key: row["text"] for key, row in self.transcripts.items() if row["final"]}

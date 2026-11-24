@@ -60,6 +60,35 @@ def test_final_transcript_translation_is_shared_and_saved():
     asyncio.run(run())
 
 
+def test_translation_arrives_before_speech_is_final():
+    class Translator:
+        async def translate(self, text, target):
+            return {"今天开": "Today we start", "今天开会。": "We have a meeting today."}[text]
+
+    async def run():
+        session = Session(Answers(), Translator())
+        viewer = asyncio.Queue()
+        owner = asyncio.Queue()
+        session.subscribers.update((viewer, owner))
+        session.capture(True)
+        session.put_transcript("1", "今天开", False, "en")
+        await asyncio.wait_for(session.translation_worker, 2)
+        for subscriber in (viewer, owner):
+            assert subscriber.get_nowait()["recording"]
+            assert subscriber.get_nowait()["translation_status"] == "pending"
+            live = subscriber.get_nowait()
+            assert not live["final"]
+            assert live["translation"] == "Today we start"
+        assert session.recording
+        session.put_transcript("1", "今天开会。", True, "en")
+        await asyncio.wait_for(session.translation_worker, 2)
+        row = session.snapshot()["transcripts"][0]
+        assert row["final"] and row["translation_final"]
+        assert row["translation"] == "We have a meeting today."
+
+    asyncio.run(run())
+
+
 def test_stream_pair_and_deduplicate():
     answers = Answers()
     with TestClient(create_app(Speech(), answers, access_key="secret")) as client:
