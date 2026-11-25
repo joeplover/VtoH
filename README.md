@@ -4,6 +4,13 @@ VtoH 将播放声音或麦克风音频转成实时字幕，在听到完整的问
 
 ## 开通接口
 
+两端在「设置」保存服务地址和访问密钥后会自动记住。Windows 使用当前用户的 DPAPI 加密，Android 使用系统 Keystore 加密。
+
+- Windows 可点击「悬浮字幕」打开置顶横条，拖动标题调整位置。全局快捷键 `Ctrl+Alt+F9` 开始或停止监听，`Ctrl+Alt+F10` 显示或收起悬浮窗。小窗内可切换标准、轻透和高对比。
+- Android 从右上角的「悬浮字幕」菜单开启并选择样式。首次开启时允许「显示在其他应用上层」。可拖动悬浮条标题调整位置。
+- 两端悬浮窗都按顺序显示客户端已收到的会话字幕和可用译文，支持「原文＋译文」或「仅译文」。滚动到底部会跟随新字幕，向上翻阅时保留阅读位置。
+- 悬浮窗可以调整字体。Windows 在悬浮窗顶部选择字体和字号，Android 在悬浮字幕菜单中选择字号。选择会记住。
+
 开通阿里云百炼的中国内地（北京）工作空间，创建一个 DashScope API Key。默认的 Paraformer 实时语音识别和 Qwen Plus 共用这个密钥。
 
 - [阿里云百炼控制台](https://bailian.console.aliyun.com/)
@@ -47,7 +54,8 @@ reverse_proxy /vtoh/* 127.0.0.1:8765
 
 在服务器上用 `curl -f http://127.0.0.1:8765/vtoh/health` 检查应用，并用 `curl -f https://www.ploverjoe.xyz/vtoh/health` 检查公网转发。避免记录配对 URL 参数。服务目前使用单进程内存会话。服务重启后需要重新配对，未录制的会话在两小时无新事件后过期。
 
-- Windows Flutter 构建需要 Flutter、带 C++ 桌面工作负载的 Visual Studio 及 x64 MinGW-w64。运行 `.\scripts\build-windows.ps1`。当前环境也可用 `-Portable` 生成 Python/Tk 版（需要先 `python -m pip install pyinstaller`），该版本使用同一个 WASAPI 组件和问答服务。运行目录下保留 `vtoh_capture.exe`。NSIS 配方用于该便携版的安装打包。
+- Windows 安装包使用 Edge WebView2 和 C++ WASAPI。先运行 `python -m pip install -r requirements-windows.txt`，再用 x64 MinGW-w64 运行 `.\scripts\build-windows.ps1 -Portable`，随后使用 NSIS 编译 `scripts/windows-installer.nsi`。运行目录下保留 `vtoh_capture.exe`。运行客户端的电脑需要 [Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)。
+- Windows Flutter 构建可通过 `.\scripts\build-windows.ps1` 生成，需要 Flutter、带 C++ 桌面工作负载的 Visual Studio 和 x64 MinGW-w64。
 - Android 构建进入 `client`，安装 Flutter 和 Android SDK 后运行 `flutter build apk --debug`。验证用 APK 使用调试签名，发布需要配置自己的签名密钥。
 - 运行 `python -m pytest -q` 检查服务端事件、配对鉴权和去重。运行 `flutter analyze` 检查客户端。
 "# VtoH" 

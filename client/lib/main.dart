@@ -18,17 +18,41 @@ class VtoHApp extends StatelessWidget {
     title: 'VtoH · 实时问答',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff246449)),
-      scaffoldBackgroundColor: const Color(0xfff2f5f3),
+      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff164d3c))
+          .copyWith(
+            primary: const Color(0xff164d3c),
+            onPrimary: const Color(0xfffffefa),
+            surface: const Color(0xfffffefa),
+            surfaceContainer: const Color(0xffeeefe7),
+            outlineVariant: const Color(0xffd9dfd5),
+          ),
+      scaffoldBackgroundColor: const Color(0xfff5f4ee),
       appBarTheme: const AppBarTheme(
-        backgroundColor: Color(0xfff2f5f3),
+        backgroundColor: Color(0xfff5f4ee),
+        surfaceTintColor: Colors.transparent,
         centerTitle: false,
+        titleTextStyle: TextStyle(
+          fontSize: 22,
+          fontWeight: FontWeight.w700,
+          color: Color(0xff1c302a),
+        ),
       ),
-      inputDecorationTheme: const InputDecorationTheme(
-        border: OutlineInputBorder(),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: const Color(0xfff8f8f1),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xffd9dfd5)),
+        ),
       ),
       filledButtonTheme: FilledButtonThemeData(
-        style: FilledButton.styleFrom(minimumSize: const Size(0, 48)),
+        style: FilledButton.styleFrom(
+          minimumSize: const Size(0, 50),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
       ),
     ),
     home: const Workspace(),
@@ -51,6 +75,9 @@ const _translationOptions = {
 
 enum WorkspaceView { subtitles, translation, answers }
 
+const _overlayStyles = {'standard': '标准', 'light': '轻透', 'contrast': '高对比'};
+const _overlayFonts = {18: '小', 24: '中', 30: '大'};
+
 class Workspace extends StatefulWidget {
   const Workspace({super.key});
 
@@ -60,6 +87,7 @@ class Workspace extends StatefulWidget {
 
 class _WorkspaceState extends State<Workspace> {
   static const _native = MethodChannel('vtoh/capture');
+  static const _workspace = MethodChannel('vtoh/workspace');
   static const _frames = EventChannel('vtoh/frames');
   final _server = TextEditingController(
     text: const String.fromEnvironment(
@@ -76,6 +104,13 @@ class _WorkspaceState extends State<Workspace> {
   String _notice = '';
   bool _busy = false;
   bool _recording = false;
+  bool _starting = false;
+  bool _cancelStart = false;
+  bool _overlayVisible = false;
+  bool _overlayBusy = false;
+  String _overlayStyle = 'standard';
+  int _overlayFontSize = 18;
+  bool _loadingConnection = false;
   bool _watching = false;
   WorkspaceView _view = WorkspaceView.subtitles;
   String _translationTarget = '';
@@ -108,6 +143,138 @@ class _WorkspaceState extends State<Workspace> {
       _refresh();
     } else {
       _sources.addAll({'mic': '麦克风', 'playback': '应用播放声音'});
+      if (Platform.isAndroid) {
+        _workspace.setMethodCallHandler((call) async {
+          if (mounted && call.method == 'overlayClosed') {
+            setState(() => _overlayVisible = false);
+          }
+          if (mounted && call.method == 'overlayStop') {
+            await _requestStop();
+          }
+        });
+        _loadingConnection = true;
+        unawaited(_loadConnection());
+        unawaited(_loadOverlayStyle());
+        unawaited(_loadOverlayFont());
+      }
+    }
+  }
+
+  Future<void> _loadOverlayFont() async {
+    try {
+      final size = await _workspace.invokeMethod<int>('overlayFont');
+      if (mounted && _overlayFonts.containsKey(size))
+        setState(() => _overlayFontSize = size!);
+    } on PlatformException {
+      _message('无法读取字幕字号。');
+    }
+  }
+
+  Future<void> _loadOverlayStyle() async {
+    try {
+      final style = await _workspace.invokeMethod<String>('overlayStyle');
+      if (mounted && _overlayStyles.containsKey(style)) {
+        setState(() => _overlayStyle = style!);
+      }
+    } on PlatformException {
+      _message('无法读取悬浮窗样式。');
+    }
+  }
+
+  Future<void> _selectOverlayAction(String value) async {
+    if (value == 'toggle') {
+      await _toggleOverlay();
+      return;
+    }
+    if (value.startsWith('font-')) {
+      final size = int.tryParse(value.substring(5));
+      if (size == null) return;
+      try {
+        await _workspace.invokeMethod<void>('setOverlayFont', size);
+        if (mounted) setState(() => _overlayFontSize = size);
+      } on PlatformException {
+        _message('无法保存字幕字号。');
+      }
+      return;
+    }
+    try {
+      await _workspace.invokeMethod<void>('setOverlayStyle', value);
+      if (mounted) setState(() => _overlayStyle = value);
+    } on PlatformException {
+      _message('无法保存悬浮窗样式。');
+    }
+  }
+
+  Future<void> _loadConnection() async {
+    try {
+      final saved = await _workspace.invokeMapMethod<String, String>(
+        'loadConnection',
+      );
+      if (!mounted || saved == null) return;
+      _server.text = saved['address'] ?? _server.text;
+      _key.text = saved['key'] ?? '';
+    } on PlatformException {
+      _message('无法读取已保存的连接设置，请重新保存。');
+    } finally {
+      if (mounted) setState(() => _loadingConnection = false);
+    }
+  }
+
+  Future<void> _toggleOverlay() async {
+    setState(() => _overlayBusy = true);
+    try {
+      if (_overlayVisible) {
+        await _workspace.invokeMethod<void>('hideOverlay');
+        if (mounted) setState(() => _overlayVisible = false);
+      } else {
+        final allowed =
+            await _workspace.invokeMethod<bool>('showOverlay') ?? false;
+        if (!mounted) return;
+        setState(() => _overlayVisible = allowed);
+        if (allowed) {
+          await _updateOverlay();
+        } else {
+          _message('请在系统设置中允许 VtoH 显示在其他应用上层。');
+        }
+      }
+    } on PlatformException {
+      _message('无法显示或收起悬浮字幕，请检查系统权限。');
+    } finally {
+      if (mounted) setState(() => _overlayBusy = false);
+    }
+  }
+
+  Future<void> _updateOverlay() async {
+    if (!_overlayVisible) return;
+    try {
+      await _workspace.invokeMethod<void>('updateOverlay', {
+        'canStop': _recording || (_starting && !_cancelStart),
+      });
+    } on PlatformException {
+      _message('无法更新悬浮字幕。');
+    }
+  }
+
+  Future<void> _updateOverlayHistory(
+    List<Event> rows, {
+    bool reset = false,
+  }) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _workspace.invokeMethod<void>('updateOverlayHistory', {
+        'reset': reset,
+        'rows': rows
+            .map(
+              (row) => {
+                'id': row['id'],
+                'text': row['text'],
+                'translation': row['translation'] ?? '',
+              },
+            )
+            .toList(),
+      });
+    } on PlatformException {
+      if (_overlayVisible) _message('无法更新悬浮字幕。');
     }
   }
 
@@ -274,6 +441,15 @@ class _WorkspaceState extends State<Workspace> {
           _notice = '会话已结束';
       }
     });
+    if (event['type'] == 'snapshot') {
+      unawaited(
+        _updateOverlayHistory(
+          (event['transcripts'] as List<dynamic>).cast<Event>(),
+        ),
+      );
+    } else if (event['type'] == 'transcript') {
+      unawaited(_updateOverlayHistory([event]));
+    }
   }
 
   Iterable<MapEntry<String, Event>> _indexed(List<dynamic> rows) =>
@@ -290,6 +466,8 @@ class _WorkspaceState extends State<Workspace> {
     _transcripts.clear();
     _answers.clear();
     _selected.clear();
+    unawaited(_updateOverlayHistory([], reset: true));
+    unawaited(_updateOverlay());
   }
 
   Future<void> _join(String raw) async {
@@ -331,10 +509,13 @@ class _WorkspaceState extends State<Workspace> {
     }
     setState(() {
       _busy = true;
+      _starting = true;
+      _cancelStart = false;
       _watching = false;
       _notice = '正在连接服务';
       if (_translationTarget.isNotEmpty) _view = WorkspaceView.translation;
     });
+    unawaited(_updateOverlay());
     try {
       final base = _serverUri(_server.text);
       if (_base != base ||
@@ -348,11 +529,11 @@ class _WorkspaceState extends State<Workspace> {
       } else if (_updates == null) {
         await _connectUpdates(_generation);
       }
-      if (!mounted) return;
+      if (!mounted || _cancelStart) return;
       final audio = await WebSocket.connect(
         _ws('audio', _owner!, target: _translationTarget).toString(),
       ).timeout(const Duration(seconds: 12));
-      if (!mounted) {
+      if (!mounted || _cancelStart) {
         await audio.close();
         return;
       }
@@ -379,6 +560,10 @@ class _WorkspaceState extends State<Workspace> {
         cancelOnError: true,
       );
       await ready.future.timeout(const Duration(seconds: 12));
+      if (_cancelStart) {
+        await _stop();
+        return;
+      }
       _lastSound = DateTime.now();
       if (Platform.isWindows) {
         final helper = await Process.start(_exe, ['capture', _source]);
@@ -397,6 +582,10 @@ class _WorkspaceState extends State<Workspace> {
         }, onError: (Object _) => unawaited(_stop(message: '采集已中断')));
         await _native.invokeMethod<void>('start', _source);
       }
+      if (_cancelStart) {
+        await _stop();
+        return;
+      }
       if (audio.readyState != WebSocket.open) throw StateError('语音识别连接已关闭');
       if (!mounted) return;
       setState(() {
@@ -405,7 +594,9 @@ class _WorkspaceState extends State<Workspace> {
       });
     } catch (error) {
       await _stop(
-        message: error is PlatformException
+        message: _cancelStart
+            ? ''
+            : error is PlatformException
             ? (error.message ?? '采集授权失败')
             : error is FormatException
             ? error.message
@@ -414,7 +605,13 @@ class _WorkspaceState extends State<Workspace> {
             : '启动监听失败，请检查连接和音源',
       );
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          _starting = false;
+          _busy = false;
+        });
+        unawaited(_updateOverlay());
+      }
     }
   }
 
@@ -447,6 +644,7 @@ class _WorkspaceState extends State<Workspace> {
         _notice = message;
       });
     }
+    unawaited(_updateOverlay());
     final capture = _capture;
     _capture = null;
     final helper = _helper;
@@ -545,6 +743,9 @@ class _WorkspaceState extends State<Workspace> {
 
   @override
   void dispose() {
+    if (Platform.isAndroid) {
+      _workspace.setMethodCallHandler(null);
+    }
     _generation++;
     _retry?.cancel();
     unawaited(_capture?.cancel());
@@ -561,7 +762,8 @@ class _WorkspaceState extends State<Workspace> {
 
   @override
   Widget build(BuildContext context) {
-    final picking = !_recording && !_busy;
+    final picking = !_recording && !_busy && !_loadingConnection;
+    final wide = MediaQuery.sizeOf(context).width >= 760;
     final silence =
         _recording && DateTime.now().difference(_lastSound).inSeconds >= 4;
     final state = _watching
@@ -573,7 +775,27 @@ class _WorkspaceState extends State<Workspace> {
         : '待机';
     return Scaffold(
       appBar: AppBar(
-        title: const Text('VtoH'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(7),
+                child: Icon(
+                  Icons.graphic_eq_rounded,
+                  size: 20,
+                  color: Theme.of(context).colorScheme.onPrimary,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Text('VtoH'),
+          ],
+        ),
         actions: [
           if (_owner != null && !_expired)
             IconButton(
@@ -582,6 +804,37 @@ class _WorkspaceState extends State<Workspace> {
               icon: const Icon(Icons.qr_code),
             ),
           if (Platform.isAndroid && picking) _pairMenu(),
+          if (Platform.isAndroid)
+            PopupMenuButton<String>(
+              tooltip: '悬浮字幕',
+              enabled: !_overlayBusy,
+              onSelected: _selectOverlayAction,
+              icon: Icon(
+                _overlayVisible
+                    ? Icons.picture_in_picture
+                    : Icons.picture_in_picture_alt_outlined,
+              ),
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'toggle',
+                  child: Text(_overlayVisible ? '收起悬浮字幕' : '开启悬浮字幕'),
+                ),
+                const PopupMenuDivider(),
+                for (final style in _overlayStyles.entries)
+                  CheckedPopupMenuItem(
+                    value: style.key,
+                    checked: _overlayStyle == style.key,
+                    child: Text(style.value),
+                  ),
+                const PopupMenuDivider(),
+                for (final font in _overlayFonts.entries)
+                  CheckedPopupMenuItem(
+                    value: 'font-' + font.key.toString(),
+                    checked: _overlayFontSize == font.key,
+                    child: Text('字号' + font.value),
+                  ),
+              ],
+            ),
           IconButton(
             tooltip: '设置',
             onPressed: picking ? _openSettings : null,
@@ -590,14 +843,16 @@ class _WorkspaceState extends State<Workspace> {
           const SizedBox(width: 8),
         ],
       ),
+      bottomNavigationBar: wide ? null : _mobileDock(),
       body: SafeArea(
+        bottom: wide,
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1100),
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
               children: [
-                _capturePanel(state, picking),
+                _capturePanel(state, picking, showAction: wide),
                 if (_notice.isNotEmpty || silence)
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
@@ -612,59 +867,47 @@ class _WorkspaceState extends State<Workspace> {
                     ),
                   ),
                 const SizedBox(height: 18),
-                LayoutBuilder(
-                  builder: (context, bounds) {
-                    final wide = bounds.maxWidth >= 720;
-                    final view = wide && _view == WorkspaceView.answers
-                        ? WorkspaceView.subtitles
-                        : _view;
-                    final content = Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        SegmentedButton<WorkspaceView>(
-                          showSelectedIcon: false,
-                          segments: [
-                            const ButtonSegment(
-                              value: WorkspaceView.subtitles,
-                              label: Text('字幕'),
-                            ),
-                            const ButtonSegment(
-                              value: WorkspaceView.translation,
-                              label: Text('翻译'),
-                            ),
-                            if (!wide)
+                if (!wide)
+                  _currentPanel(_view)
+                else
+                  Builder(
+                    builder: (context) {
+                      final view = _view == WorkspaceView.answers
+                          ? WorkspaceView.subtitles
+                          : _view;
+                      final content = Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SegmentedButton<WorkspaceView>(
+                            showSelectedIcon: false,
+                            segments: [
                               const ButtonSegment(
-                                value: WorkspaceView.answers,
-                                label: Text('问答'),
+                                value: WorkspaceView.subtitles,
+                                label: Text('字幕'),
                               ),
-                          ],
-                          selected: {view},
-                          onSelectionChanged: (values) =>
-                              setState(() => _view = values.first),
-                        ),
-                        const SizedBox(height: 12),
-                        switch (view) {
-                          WorkspaceView.subtitles => _subtitlePanel(
-                            showTitle: false,
+                              const ButtonSegment(
+                                value: WorkspaceView.translation,
+                                label: Text('翻译'),
+                              ),
+                            ],
+                            selected: {view},
+                            onSelectionChanged: (values) =>
+                                setState(() => _view = values.first),
                           ),
-                          WorkspaceView.translation => _translationPanel(),
-                          WorkspaceView.answers => _answerPanel(
-                            showTitle: false,
-                          ),
-                        },
-                      ],
-                    );
-                    if (!wide) return content;
-                    return Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(flex: 6, child: content),
-                        const SizedBox(width: 18),
-                        Expanded(flex: 5, child: _answerPanel()),
-                      ],
-                    );
-                  },
-                ),
+                          const SizedBox(height: 12),
+                          _currentPanel(view),
+                        ],
+                      );
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(flex: 6, child: content),
+                          const SizedBox(width: 18),
+                          Expanded(flex: 5, child: _answerPanel()),
+                        ],
+                      );
+                    },
+                  ),
               ],
             ),
           ),
@@ -673,6 +916,87 @@ class _WorkspaceState extends State<Workspace> {
     );
   }
 
+  Widget _currentPanel(WorkspaceView view) => switch (view) {
+    WorkspaceView.subtitles => _subtitlePanel(showTitle: true),
+    WorkspaceView.translation => _translationPanel(),
+    WorkspaceView.answers => _answerPanel(),
+  };
+
+  Widget _mobileDock() {
+    final colors = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surface,
+        border: Border(top: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: SafeArea(
+        top: false,
+        minimum: const EdgeInsets.only(bottom: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!_watching)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: _captureAction(),
+                ),
+              ),
+            MediaQuery.removePadding(
+              context: context,
+              removeBottom: true,
+              child: NavigationBar(
+                height: 64,
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                selectedIndex: _view.index,
+                onDestinationSelected: (index) =>
+                    setState(() => _view = WorkspaceView.values[index]),
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(Icons.subtitles_outlined),
+                    selectedIcon: Icon(Icons.subtitles_rounded),
+                    label: '字幕',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.translate_rounded),
+                    label: '翻译',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.chat_bubble_outline_rounded),
+                    selectedIcon: Icon(Icons.chat_bubble_rounded),
+                    label: '问答',
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _captureAction() => FilledButton.icon(
+    onPressed: _starting && !_cancelStart
+        ? _requestStop
+        : _busy || _loadingConnection
+        ? null
+        : _recording
+        ? _stopFromPage
+        : _start,
+    icon: Icon(_recording ? Icons.stop_rounded : Icons.play_arrow_rounded),
+    label: Text(
+      _starting && !_cancelStart
+          ? '取消连接'
+          : _busy
+          ? '请稍候'
+          : _recording
+          ? '停止监听'
+          : '开始监听',
+    ),
+  );
+
   Future<void> _openSettings() async {
     final result = await Navigator.of(context).push<(String, String)>(
       MaterialPageRoute(
@@ -680,6 +1004,12 @@ class _WorkspaceState extends State<Workspace> {
           address: _server.text,
           keyValue: _key.text,
           validate: _serverUri,
+          saveConnection: Platform.isAndroid
+              ? (address, key) => _workspace.invokeMethod<void>(
+                  'saveConnection',
+                  {'address': address, 'key': key},
+                )
+              : null,
         ),
       ),
     );
@@ -715,27 +1045,33 @@ class _WorkspaceState extends State<Workspace> {
     ],
   );
 
-  Widget _capturePanel(String state, bool picking) {
-    final colors = Theme.of(context).colorScheme;
+  Widget _capturePanel(String state, bool picking, {required bool showAction}) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
     return _surface(
       children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Chip(
-            avatar: Icon(
-              _watching
-                  ? Icons.devices
-                  : _recording
-                  ? Icons.graphic_eq
-                  : Icons.circle_outlined,
-              size: 17,
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                _watching ? '电脑会话' : '监听',
+                style: theme.textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -.5,
+                ),
+              ),
             ),
-            label: Text(state),
-            side: BorderSide.none,
-            backgroundColor: _recording || _remoteActive
-                ? colors.primaryContainer
-                : colors.surfaceContainer,
-          ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(30),
+                color: _recording || _remoteActive
+                    ? colors.primaryContainer
+                    : colors.surfaceContainer,
+              ),
+              child: Text(state, style: theme.textTheme.labelMedium),
+            ),
+          ],
         ),
         if (!_watching) ...[
           const SizedBox(height: 10),
@@ -796,18 +1132,7 @@ class _WorkspaceState extends State<Workspace> {
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _busy
-                ? null
-                : _recording
-                ? _stopFromPage
-                : _start,
-            icon: Icon(
-              _recording ? Icons.stop_rounded : Icons.play_arrow_rounded,
-            ),
-            label: Text(_recording ? '停止监听' : '开始监听'),
-          ),
+          if (showAction) ...[const SizedBox(height: 12), _captureAction()],
           if (_recording) ...[
             const SizedBox(height: 10),
             Text('输入电平', style: Theme.of(context).textTheme.labelMedium),
@@ -832,11 +1157,24 @@ class _WorkspaceState extends State<Workspace> {
     }
   }
 
+  Future<void> _requestStop() async {
+    if (_starting && !_cancelStart) {
+      setState(() {
+        _cancelStart = true;
+        _notice = '正在停止监听';
+      });
+      unawaited(_updateOverlay());
+      await _stop();
+    } else if (_recording && !_busy) {
+      await _stopFromPage();
+    }
+  }
+
   Widget _surface({required List<Widget> children}) => DecoratedBox(
     decoration: BoxDecoration(
       color: Theme.of(context).colorScheme.surface,
       border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(20),
     ),
     child: Padding(
       padding: const EdgeInsets.all(16),
@@ -946,6 +1284,7 @@ class _WorkspaceState extends State<Workspace> {
     final theme = Theme.of(context);
     return _surface(
       children: [
+        Text('双语字幕', style: theme.textTheme.titleLarge),
         if (rows.isEmpty)
           _empty(
             Icons.translate,
@@ -999,11 +1338,13 @@ class ConnectionSettings extends StatefulWidget {
     required this.address,
     required this.keyValue,
     required this.validate,
+    this.saveConnection,
   });
 
   final String address;
   final String keyValue;
   final Uri Function(String) validate;
+  final Future<void> Function(String, String)? saveConnection;
 
   @override
   State<ConnectionSettings> createState() => _ConnectionSettingsState();
@@ -1013,14 +1354,25 @@ class _ConnectionSettingsState extends State<ConnectionSettings> {
   late final _address = TextEditingController(text: widget.address);
   late final _key = TextEditingController(text: widget.keyValue);
   bool _showKey = false;
+  bool _saving = false;
   String? _error;
 
-  void _save() {
+  Future<void> _save() async {
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
     try {
       final address = widget.validate(_address.text);
-      Navigator.pop(context, ('$address/', _key.text.trim()));
+      final key = _key.text.trim();
+      await widget.saveConnection?.call('$address/', key);
+      if (mounted) Navigator.pop(context, ('$address/', key));
     } on FormatException catch (error) {
-      setState(() => _error = error.message);
+      if (mounted) setState(() => _error = error.message);
+    } on PlatformException {
+      if (mounted) setState(() => _error = '无法安全保存连接设置，请重试。');
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -1070,7 +1422,10 @@ class _ConnectionSettingsState extends State<ConnectionSettings> {
                 ),
               ),
               const SizedBox(height: 20),
-              FilledButton(onPressed: _save, child: const Text('保存')),
+              FilledButton(
+                onPressed: _saving ? null : _save,
+                child: const Text('保存'),
+              ),
             ],
           ),
         ),

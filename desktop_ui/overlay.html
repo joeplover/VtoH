@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; object-src 'none'">
+<title>VtoH 悬浮字幕</title>
+<link rel="stylesheet" href="overlay.css">
+<script defer src="overlay.js"></script>
+<header>
+  <span class="pywebview-drag-region">VtoH · 悬浮字幕</span>
+  <button id="hide" aria-label="收起悬浮窗" title="Ctrl + Alt + F10" disabled>×</button>
+  <div class="controls">
+  <select id="style" aria-label="悬浮字幕样式">
+    <option value="standard">标准</option><option value="light">轻透</option><option value="contrast">高对比</option>
+  </select>
+  <select id="mode" aria-label="字幕显示内容">
+    <option value="bilingual">原文＋译文</option><option value="translation">仅译文</option>
+  </select>
+  <select id="font" aria-label="字幕字体和字号">
+    <option value="system-18">系统 18</option><option value="system-24">系统 24</option>
+    <option value="system-30">系统 30</option><option value="serif-18">衬线 18</option>
+    <option value="serif-24">衬线 24</option><option value="mono-18">等宽 18</option>
+    <option value="mono-24">等宽 24</option>
+  </select>
+  <button id="toggle" title="Ctrl + Alt + F9" disabled>开始监听</button>
+  </div>
+</header>
+<main id="stream" tabindex="0" aria-label="悬浮字幕历史">
+  <p id="empty">等待实时字幕</p>
+  <div id="captions"></div>
+</main>
+<div id="resize" role="separator" aria-label="缩放悬浮字幕"></div>
+</html>

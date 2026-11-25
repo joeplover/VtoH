@@ -12,8 +12,7 @@ UninstPage instfiles
 
 Section
   SetOutPath "$INSTDIR"
-  File "..\dist\windows\VtoH.exe"
-  File "..\dist\windows\vtoh_capture.exe"
+  File /r "..\dist\windows\VtoH\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\VtoH"
   CreateShortcut "$SMPROGRAMS\VtoH\VtoH.lnk" "$INSTDIR\VtoH.exe"
@@ -27,6 +26,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\VtoH"
   Delete "$INSTDIR\VtoH.exe"
   Delete "$INSTDIR\vtoh_capture.exe"
+  RMDir /r "$INSTDIR\_internal"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\VtoH"
