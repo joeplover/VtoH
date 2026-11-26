@@ -81,6 +81,8 @@ const _translationOptions = {
 
 enum WorkspaceView { subtitles, translation, answers }
 
+bool get _isMobile => Platform.isAndroid || Platform.isIOS;
+
 const _overlayStyles = {'standard': '标准', 'light': '轻透', 'contrast': '高对比'};
 const _overlayFonts = {18: '小', 24: '中', 30: '大'};
 
@@ -141,8 +143,13 @@ class _WorkspaceState extends State<Workspace> {
       _source = '0';
       _refresh();
     } else {
-      _sources.addAll({'mic': '麦克风', 'playback': '应用播放声音'});
+      _sources['mic'] = '麦克风';
+      if (_isMobile) {
+        _loadingConnection = true;
+        unawaited(_loadConnection());
+      }
       if (Platform.isAndroid) {
+        _sources['playback'] = '应用播放声音';
         _workspace.setMethodCallHandler((call) async {
           if (mounted && call.method == 'overlayClosed') {
             setState(() => _overlayVisible = false);
@@ -151,8 +158,6 @@ class _WorkspaceState extends State<Workspace> {
             await _requestStop();
           }
         });
-        _loadingConnection = true;
-        unawaited(_loadConnection());
         unawaited(_loadOverlayStyle());
         unawaited(_loadOverlayFont());
       }
@@ -645,7 +650,7 @@ class _WorkspaceState extends State<Workspace> {
         ),
       );
     }
-    if (Platform.isAndroid && capture != null) {
+    if (_isMobile && capture != null) {
       try {
         await _native.invokeMethod<void>('stop');
       } on PlatformException {
@@ -732,7 +737,7 @@ class _WorkspaceState extends State<Workspace> {
     unawaited(_capture?.cancel());
     unawaited(_updates?.close());
     unawaited(_audio?.close());
-    if (Platform.isAndroid && _recording) {
+    if (_isMobile && _recording) {
       unawaited(_native.invokeMethod<void>('stop'));
     }
     _helper?.kill();
@@ -783,7 +788,7 @@ class _WorkspaceState extends State<Workspace> {
               onPressed: _showPair,
               icon: const Icon(Icons.qr_code),
             ),
-          if (Platform.isAndroid && picking) _pairMenu(),
+          if (_isMobile && picking) _pairMenu(),
           if (Platform.isAndroid)
             PopupMenuButton<String>(
               tooltip: '悬浮字幕',
@@ -982,7 +987,7 @@ class _WorkspaceState extends State<Workspace> {
       MaterialPageRoute(
         builder: (_) => ConnectionSettings(
           keyValue: _key.text,
-          saveConnection: Platform.isAndroid
+          saveConnection: _isMobile
               ? (key) => _workspace.invokeMethod<void>('saveConnection', {
                   'key': key,
                 })
