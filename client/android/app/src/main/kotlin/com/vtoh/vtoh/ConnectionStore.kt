@@ -25,10 +25,10 @@ internal class ConnectionStore(context: Context) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, blob.copyOfRange(0, 12)))
         val data = JSONObject(cipher.doFinal(blob.copyOfRange(12, blob.size)).toString(Charsets.UTF_8))
-        return mapOf("address" to data.getString("address"), "key" to data.getString("key"))
+        return mapOf("key" to data.getString("key"))
     }
 
-    fun write(address: String, accessKey: String) {
+    fun write(accessKey: String) {
         val key = keyStore().getKey(alias, null) as? SecretKey
             ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
                 .apply {
@@ -39,7 +39,7 @@ internal class ConnectionStore(context: Context) {
                 }.generateKey()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key)
-        val data = JSONObject().put("address", address).put("key", accessKey)
+        val data = JSONObject().put("key", accessKey)
         val blob = cipher.iv + cipher.doFinal(data.toString().toByteArray(Charsets.UTF_8))
         check(prefs.edit().putString("data", Base64.encodeToString(blob, Base64.NO_WRAP)).commit())
     }

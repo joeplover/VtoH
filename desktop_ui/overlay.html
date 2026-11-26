@@ -23,8 +23,10 @@
     <option value="mono-24">等宽 24</option>
   </select>
   <button id="toggle" title="Ctrl + Alt + F9" disabled>开始监听</button>
+  <button id="speak" title="朗读最新字幕" disabled>朗读</button>
   </div>
 </header>
+<div id="speech-error" role="status" hidden></div>
 <main id="stream" tabindex="0" aria-label="悬浮字幕历史">
   <p id="empty">等待实时字幕</p>
   <div id="captions"></div>

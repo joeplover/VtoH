@@ -20,6 +20,7 @@ li { margin-top: 6px; }
 .pending, .empty { color: #52685e; }
 #transcripts p { padding-bottom: 12px; border-bottom: 1px solid #dce5de; line-height: 1.65; overflow-wrap: anywhere; }
 #transcripts .translation { display: block; color: #185b43; margin-top: 4px; }
+#transcripts p, #transcripts .translation { white-space: pre-line; }
 @media (max-width: 620px) { main { grid-template-columns: 1fr; gap: 24px; } }
 </style>
 <header><h1>实时问答</h1><span id="status" role="status">正在连接</span></header>
@@ -57,10 +58,10 @@ function render() {
     return card;
   });
   const subtitleItems = [...transcripts.values()].reverse().map(row => {
-    const subtitle = element('p', row.text, row.final ? '' : 'pending');
+    const subtitle = element('p', row.text_lines?.join('\n') ?? row.text, row.final ? '' : 'pending');
     if (row.translation_status) {
       const hint = row.translation_status === 'pending' ? '正在翻译…' : '暂无法翻译';
-      const translation = element('span', row.translation || hint, 'translation');
+      const translation = element('span', row.translation_lines?.join('\n') || row.translation || hint, 'translation');
       if (row.translation) translation.lang = row.translation_language;
       subtitle.append(translation);
     }

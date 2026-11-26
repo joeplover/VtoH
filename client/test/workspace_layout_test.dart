@@ -32,7 +32,8 @@ void main() {
     await tester.tap(find.byTooltip('设置'));
     await tester.pumpAndSettle();
     expect(find.text('连接设置'), findsOneWidget);
-    expect(find.text('服务地址'), findsOneWidget);
+    expect(find.text('服务地址'), findsNothing);
+    expect(find.byType(TextField), findsOneWidget);
     expect(find.text('访问密钥'), findsOneWidget);
     expect(find.text('开始监听'), findsNothing);
     expect(tester.takeException(), isNull);

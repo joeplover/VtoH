@@ -1,6 +1,7 @@
 import asyncio
 import ctypes
 import json
+import locale
 import os
 import queue
 import subprocess
@@ -12,15 +13,16 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
+import pythoncom
 import qrcode
 import pywintypes
 import win32crypt
+import win32com.client
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).parent
-SERVER_PREFIX = "/vtoh"
-DEFAULT_SERVER_URL = "https://www.ploverjoe.xyz/vtoh/"
+SERVER_URL = "https://www.ploverjoe.xyz/vtoh"
 TRANSLATION_OPTIONS = {
     "关闭翻译": "", "简体中文": "zh", "英语": "en", "日语": "ja", "韩语": "ko",
     "法语": "fr", "西班牙语": "es", "德语": "de",
@@ -31,15 +33,6 @@ OVERLAY_FONT_SIZES = range(12, 41, 2)
 CAPTURE = ROOT / "vtoh_capture.exe"
 if not CAPTURE.is_file():
     CAPTURE = ROOT / ".tools" / "bin" / "vtoh_capture.exe"
-
-
-def server_base(raw: str) -> str:
-    url = urlsplit(raw.strip())
-    if (url.scheme not in ("https", "http") or not url.hostname
-            or url.path.rstrip("/") not in ("", SERVER_PREFIX)
-            or url.query or url.fragment or url.username is not None):
-        raise ValueError("服务地址格式有误")
-    return urlunsplit((url.scheme, url.netloc, SERVER_PREFIX, "", ""))
 
 
 def endpoint(base: str, path: str, token: str, target: str = "") -> str:
@@ -188,7 +181,6 @@ class DesktopBridge:
             self._record_caption,
         )
         self.thread = None
-        self.base = os.getenv("VTOH_SERVER_URL", DEFAULT_SERVER_URL)
         self.key = os.getenv("VTOH_ACCESS_KEY", "")
         self._settings_path = settings_path or Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "VtoH" / "connection.dat"
         self._settings_error = None
@@ -203,10 +195,13 @@ class DesktopBridge:
         self._caption_session = None
         self._caption_revision = 0
         self._caption_rows = {}
+        self._speech_lock = threading.Lock()
+        self._speech_stop = None
+        self._speech_error = ""
         try:
             _, data = win32crypt.CryptUnprotectData(self._settings_path.read_bytes(), None, None, None, 1)
             saved = json.loads(data)
-            self.base, self.key = server_base(saved["address"]) + "/", saved["key"]
+            self.key = saved["key"]
             if saved.get("overlay_style") in OVERLAY_OPACITY:
                 self._overlay_style = saved["overlay_style"]
             if saved.get("overlay_mode") in ("bilingual", "translation"):
@@ -221,24 +216,20 @@ class DesktopBridge:
             self._settings_error = "无法读取已保存的连接设置，请重新保存。"
 
     def settings(self):
-        return {"address": self.base, "has_key": bool(self.key)}
+        return {"has_key": bool(self.key)}
 
-    def save_settings(self, address, key):
-        try:
-            base = server_base(address) + "/"
-        except ValueError as error:
-            return {"error": str(error)}
+    def save_settings(self, key):
         secret = self.key if key is None else key.strip()
-        if not self._write_settings(base, secret, self._overlay_style, self._overlay_mode,
+        if not self._write_settings(secret, self._overlay_style, self._overlay_mode,
                                     self._overlay_font_size, self._overlay_font_family):
             return {"error": "无法安全保存连接设置。"}
-        self.base, self.key = base, secret
+        self.key = secret
         return self.settings()
 
-    def _write_settings(self, base, secret, style, mode, font_size, font_family):
+    def _write_settings(self, secret, style, mode, font_size, font_family):
         temporary = None
         try:
-            data = json.dumps({"address": base, "key": secret,
+            data = json.dumps({"key": secret,
                                "overlay_style": style, "overlay_mode": mode,
                                "overlay_font_size": font_size,
                                "overlay_font_family": font_family}).encode("utf-8")
@@ -261,7 +252,7 @@ class DesktopBridge:
     def set_overlay_style(self, style):
         if style not in OVERLAY_OPACITY:
             return False
-        if not self._write_settings(self.base, self.key, style, self._overlay_mode,
+        if not self._write_settings(self.key, style, self._overlay_mode,
                                     self._overlay_font_size, self._overlay_font_family):
             return False
         self._overlay_style = style
@@ -274,10 +265,11 @@ class DesktopBridge:
     def set_overlay_mode(self, mode):
         if mode not in ("bilingual", "translation"):
             return False
-        if not self._write_settings(self.base, self.key, self._overlay_style, mode,
+        if not self._write_settings(self.key, self._overlay_style, mode,
                                     self._overlay_font_size, self._overlay_font_family):
             return False
         self._overlay_mode = mode
+        self.stop_caption_speech()
         return True
 
     def overlay_font(self):
@@ -286,7 +278,7 @@ class DesktopBridge:
     def set_overlay_font(self, size, family):
         if int(size) not in OVERLAY_FONT_SIZES or family not in OVERLAY_FONTS:
             return False
-        if not self._write_settings(self.base, self.key, self._overlay_style, self._overlay_mode,
+        if not self._write_settings(self.key, self._overlay_style, self._overlay_mode,
                                     int(size), family):
             return False
         self._overlay_font_size = int(size)
@@ -308,6 +300,7 @@ class DesktopBridge:
                 self._overlay.show()
                 self._apply_overlay_opacity()
             else:
+                self.stop_caption_speech()
                 self._overlay.hide()
             self._overlay_open = visible
         return self._overlay_open
@@ -340,6 +333,7 @@ class DesktopBridge:
         with self._caption_lock:
             if kind == "session":
                 if event["id"] != self._caption_session:
+                    self.stop_caption_speech()
                     self._caption_session = event["id"]
                     self._caption_rows.clear()
                     self._caption_revision += 1
@@ -357,6 +351,75 @@ class DesktopBridge:
             history = {"transcripts": rows, "session": self._caption_session,
                        "revision": self._caption_revision, "reset": reset}
         return {**history, **self.workspace_status()}
+
+    def caption_speech_status(self):
+        with self._speech_lock:
+            return {"speaking": self._speech_stop is not None, "error": self._speech_error}
+
+    def stop_caption_speech(self):
+        with self._speech_lock:
+            if self._speech_stop is not None:
+                self._speech_stop.set()
+            self._speech_error = ""
+
+    def speak_caption(self, identifier):
+        if not isinstance(identifier, str):
+            return
+        with self._caption_lock:
+            row = self._caption_rows.get(identifier)
+            if row is None:
+                return
+            caption = row[1]
+            translation = caption.get("translation", "").strip()
+            text = translation or (caption["text"].strip() if self._overlay_mode == "bilingual" else "")
+            if not text:
+                return
+            language = caption.get("translation_language", "") if translation else ""
+            with self._speech_lock:
+                if self._speech_stop is not None:
+                    return
+                stop = self._speech_stop = threading.Event()
+                self._speech_error = ""
+        threading.Thread(target=self._play_caption, args=(text, language, stop), daemon=True).start()
+
+    def _play_caption(self, text, language, stop):
+        error = ""
+        voice = None
+        pythoncom.CoInitialize()
+        try:
+            if stop.is_set():
+                return
+            voice = win32com.client.Dispatch("SAPI.SpVoice")
+            if not language:
+                if any("\u3040" <= char <= "\u30ff" for char in text):
+                    language = "ja"
+                elif any("\uac00" <= char <= "\ud7af" for char in text):
+                    language = "ko"
+                elif any("\u3400" <= char <= "\u9fff" for char in text):
+                    language = "zh"
+            if language:
+                for token in voice.GetVoices():
+                    names = (locale.windows_locale.get(int(code, 16), "").split("_")[0]
+                             for code in token.GetAttribute("Language").split(";"))
+                    if language in names:
+                        voice.Voice = token
+                        break
+                else:
+                    error = "请在 Windows 设置中安装对应的朗读语音。"
+                    return
+            voice.Speak(text, 1 | 16)  # Asynchronous and plain text.
+            while not voice.WaitUntilDone(50):
+                if stop.is_set():
+                    voice.Speak("", 1 | 2 | 16)  # Purge the current utterance.
+                    break
+        except (pywintypes.com_error, ValueError):
+            error = "无法使用 Windows 朗读语音。"
+        finally:
+            voice = None
+            pythoncom.CoUninitialize()
+            with self._speech_lock:
+                self._speech_stop = None
+                self._speech_error = "" if stop.is_set() else error
 
     def resize_overlay(self, width, height):
         if self._overlay is not None and self._overlay_open:
@@ -406,11 +469,7 @@ class DesktopBridge:
     def start_capture(self, pid, target):
         if self.workspace_status()["phase"] != "idle":
             return {"error": "已在监听。"}
-        try:
-            base = server_base(self.base)
-        except ValueError as error:
-            return {"error": str(error)}
-        if not self.key and base == server_base(DEFAULT_SERVER_URL):
+        if not self.key:
             return {"settings_required": True}
         if not isinstance(pid, str) or not pid.isdecimal() or target not in TRANSLATION_OPTIONS.values():
             return {"error": "请选择有效的音源和目标语言。"}
@@ -428,7 +487,7 @@ class DesktopBridge:
 
         def work():
             try:
-                asyncio.run(self.connection.run(base, key, pid, target))
+                asyncio.run(self.connection.run(SERVER_URL, key, pid, target))
             except Exception as failure:
                 while isinstance(failure, BaseExceptionGroup):
                     failure = failure.exceptions[0]
@@ -505,6 +564,7 @@ if __name__ == "__main__":
     )
 
     def shutdown():
+        bridge.stop_caption_speech()
         bridge.stop_capture()
         bridge._overlay.destroy()
 

@@ -58,6 +58,7 @@ select, input { height: 38px; padding: 0 10px; border: 1px solid var(--line); bo
 .empty { height: 100%; min-height: 145px; display: grid; place-content: center; padding: 20px; text-align: center; color: var(--muted); font-size: 15px; }
 .entry { padding: 15px 20px; overflow-wrap: anywhere; border-bottom: 1px solid #eaeee6; }
 .entry:last-child { border-bottom: 0; }
+.entry .caption-text, .entry .translation { white-space: pre-line; }
 .line { display: flex; gap: 10px; align-items: baseline; font-size: 16px; line-height: 1.5; }
 .line input { accent-color: var(--accent); height: auto; flex: none; margin: 0; }
 .partial { color: var(--muted); }

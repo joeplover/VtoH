@@ -67,11 +67,11 @@ function renderTranscript(row) {
     });
     line.append(checkbox);
   }
-  line.append(node('span', row.text));
+  line.append(node('span', row.text_lines?.join('\n') ?? row.text, 'caption-text'));
   entry.append(line);
   if (bilingual && row.translation_status) {
     const fallback = row.translation_status === 'pending' ? '正在翻译…' : '暂无法翻译';
-    const translation = node('p', row.translation || fallback, 'translation');
+    const translation = node('p', row.translation_lines?.join('\n') || row.translation || fallback, 'translation');
     if (row.translation) translation.lang = row.translation_language;
     entry.append(translation);
   }
@@ -154,7 +154,6 @@ async function refreshSources() {
 
 async function openSettings() {
   const settings = await api.settings();
-  byId('address').value = settings.address;
   byId('key').value = '';
   byId('key').placeholder = settings.has_key ? '已设置，留空保留现有密钥' : '';
   byId('settings-error').textContent = '';
@@ -244,7 +243,7 @@ byId('overlay').addEventListener('click', async () => {
 byId('cancel').addEventListener('click', () => byId('settings-dialog').close());
 byId('connection-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const result = await api.save_settings(byId('address').value, byId('key').value || null);
+  const result = await api.save_settings(byId('key').value || null);
   if (result.error) {
     byId('settings-error').textContent = result.error;
   } else {

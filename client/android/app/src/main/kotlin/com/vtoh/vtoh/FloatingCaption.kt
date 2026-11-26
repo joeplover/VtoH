@@ -4,7 +4,12 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
@@ -14,6 +19,8 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
+import java.util.Locale
 
 internal class FloatingCaption(
     private val context: Context, private val closed: () -> Unit, private val stop: () -> Unit
@@ -34,6 +41,14 @@ internal class FloatingCaption(
     private var canStop = false
     private var stopButton: TextView? = null
     private var root: LinearLayout? = null
+    private val main = Handler(Looper.getMainLooper())
+    private var speechButton: TextView? = null
+    private var speechEngine: TextToSpeech? = null
+    private var speechReady = false
+    private var speechRequest: SpeechRequest? = null
+    private var speechRevision = 0
+
+    private data class SpeechRequest(val text: String, val locale: Locale, val id: String)
 
     private fun dp(size: Int) = (context.resources.displayMetrics.density * size).toInt()
 
@@ -105,11 +120,15 @@ internal class FloatingCaption(
         scroller.addView(rows)
         panel.addView(scroller, LinearLayout.LayoutParams(-1, 0, 1f))
         val controls = LinearLayout(context).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
-        val modeButton = label(if (mode == "translation") "仅译文" else "原文＋译文", 12, Color.WHITE)
-        modeButton.setPadding(dp(10), dp(8), dp(10), dp(8))
+        val modeButton = label(if (mode == "translation") "仅译文" else "双语", 12, Color.WHITE)
+        modeButton.gravity = Gravity.CENTER
         modeButton.setOnClickListener {
             setMode(if (mode == "translation") "bilingual" else "translation")
-            modeButton.text = if (mode == "translation") "仅译文" else "原文＋译文"
+            modeButton.text = if (mode == "translation") "仅译文" else "双语"
+        }
+        val speakAction = label("朗读", 12, Color.WHITE).apply {
+            gravity = Gravity.CENTER
+            setOnClickListener { if (speechRequest == null) readLatest() else stopSpeech() }
         }
         val resize = label("↘", 22, Color.WHITE).apply {
             gravity = Gravity.CENTER
@@ -140,7 +159,8 @@ internal class FloatingCaption(
                 true
             }
         }
-        controls.addView(modeButton)
+        controls.addView(speakAction, LinearLayout.LayoutParams(dp(58), dp(42)))
+        controls.addView(modeButton, LinearLayout.LayoutParams(dp(52), dp(42)))
         controls.addView(resize, LinearLayout.LayoutParams(dp(42), dp(42)))
         panel.addView(controls)
         manager.addView(panel, params)
@@ -149,8 +169,10 @@ internal class FloatingCaption(
         list = rows
         empty = placeholder
         stopButton = stopAction
+        speechButton = speakAction
         history.values.forEach(::renderRow)
         renderEmpty()
+        updateSpeechButton()
         updateStop(canStop)
         follow(scroller)
     }
@@ -164,6 +186,7 @@ internal class FloatingCaption(
         val viewport = scroll
         val autoFollow = viewport != null && (reset || followPending || !viewport.canScrollVertically(1))
         if (reset) {
+            stopSpeech()
             history.clear()
             visibleRows.values.forEach { list?.removeView(it.first) }
             visibleRows.clear()
@@ -174,6 +197,7 @@ internal class FloatingCaption(
             renderRow(row)
         }
         renderEmpty()
+        updateSpeechButton()
         if (viewport != null && autoFollow) follow(viewport)
     }
 
@@ -197,6 +221,7 @@ internal class FloatingCaption(
         val autoFollow = viewport != null && (followPending || !viewport.canScrollVertically(1))
         prefs.edit().putString("overlay_mode", value).apply()
         mode = value
+        stopSpeech()
         for (row in history.values) renderRow(row)
         renderEmpty()
         if (viewport != null && autoFollow) follow(viewport)
@@ -259,6 +284,7 @@ internal class FloatingCaption(
     }
 
     fun hide() {
+        stopSpeech()
         root?.let { manager.removeViewImmediate(it) }
         root = null
         scroll = null
@@ -267,6 +293,96 @@ internal class FloatingCaption(
         followPending = false
         visibleRows.clear()
         stopButton = null
+        speechButton = null
+    }
+
+    fun dispose() {
+        hide()
+        speechEngine?.shutdown()
+        speechEngine = null
+        speechReady = false
+    }
+
+    private fun latestReadable() = history.values.lastOrNull {
+        !it["translation"].isNullOrBlank() || (mode == "bilingual" && !it["text"].isNullOrBlank())
+    }
+
+    private fun updateSpeechButton() {
+        speechButton?.apply {
+            text = if (speechRequest == null) "朗读" else "停止朗读"
+            contentDescription = if (speechRequest == null) "朗读最新字幕" else "停止朗读"
+            isEnabled = speechRequest != null || latestReadable() != null
+            alpha = if (isEnabled) 1f else .5f
+        }
+    }
+
+    private fun readLatest() {
+        val row = latestReadable() ?: return
+        val translated = row["translation"].orEmpty()
+        val text = translated.ifBlank { row["text"].orEmpty() }
+        val language = row["translation_language"].orEmpty()
+        val locale = when {
+            translated.isNotBlank() && language.isNotBlank() -> Locale.forLanguageTag(language)
+            text.any { it in '\u3040'..'\u30ff' } -> Locale.JAPANESE
+            text.any { it in '\uac00'..'\ud7af' } -> Locale.KOREAN
+            text.any { it in '\u3400'..'\u9fff' } -> Locale.SIMPLIFIED_CHINESE
+            else -> Locale.getDefault()
+        }
+        speechRequest = SpeechRequest(text, locale, (++speechRevision).toString())
+        updateSpeechButton()
+        if (speechReady) {
+            playSpeech()
+        } else if (speechEngine == null) {
+            speechEngine = TextToSpeech(context) { status ->
+                main.post {
+                    val engine = speechEngine ?: return@post
+                    if (status != TextToSpeech.SUCCESS) {
+                        engine.shutdown()
+                        speechEngine = null
+                        if (speechRequest != null) speechError("无法使用系统朗读，请检查文字转语音设置。")
+                        return@post
+                    }
+                    engine.setAudioAttributes(AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build())
+                    speechReady = true
+                    playSpeech()
+                }
+            }
+        }
+    }
+
+    private fun playSpeech() {
+        val request = speechRequest ?: return
+        val engine = speechEngine ?: return
+        if (engine.setLanguage(request.locale) < TextToSpeech.LANG_AVAILABLE) {
+            speechError("请在系统设置中安装对应的朗读语音。")
+            return
+        }
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String) = Unit
+            override fun onDone(utteranceId: String) {
+                main.post { if (speechRequest?.id == utteranceId) stopSpeech() }
+            }
+            override fun onError(utteranceId: String) {
+                main.post { if (speechRequest?.id == utteranceId) speechError("无法朗读这段字幕。") }
+            }
+        })
+        if (engine.speak(request.text, TextToSpeech.QUEUE_FLUSH, null, request.id) != TextToSpeech.SUCCESS) {
+            speechError("无法朗读这段字幕。")
+        }
+    }
+
+    private fun speechError(message: String) {
+        stopSpeech()
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun stopSpeech() {
+        speechRequest = null
+        if (speechReady) speechEngine?.stop()
+        updateSpeechButton()
     }
 
     private fun label(value: String, size: Int, color: Int) = TextView(context).apply {

@@ -11,10 +11,38 @@ window.addEventListener('pywebviewready', async () => {
   const hide = document.getElementById('hide');
   const resize = document.getElementById('resize');
   const font = document.getElementById('font');
+  const speak = document.getElementById('speak');
+  const speechError = document.getElementById('speech-error');
   const rows = new Map();
   let revision = -1;
   let session = null;
   let drag;
+  let readableId;
+  let speech = {speaking: false, error: ''};
+  function latestCaption() {
+    return [...rows.values()].reverse().find(({row}) =>
+      row.translation?.trim() || (mode.value === 'bilingual' && row.text.trim())
+    )?.row.id;
+  }
+  function renderSpeech() {
+    speak.textContent = speech.speaking ? '停止朗读' : '朗读';
+    speak.disabled = !speech.speaking && readableId === undefined;
+    speechError.textContent = speech.error;
+    speechError.hidden = !speech.error;
+  }
+  speak.onclick = async () => {
+    speak.disabled = true;
+    try {
+      if (speech.speaking) {
+        await api.stop_caption_speech();
+      } else {
+        await api.speak_caption(readableId);
+      }
+      speech = await api.caption_speech_status();
+    } finally {
+      renderSpeech();
+    }
+  };
   hide.onclick = async () => {
     hide.disabled = true;
     try {
@@ -55,6 +83,8 @@ window.addEventListener('pywebviewready', async () => {
     const only = mode.value === 'translation';
     captions.classList.toggle('translation-only', only);
     renderEmpty();
+    readableId = latestCaption();
+    renderSpeech();
     if (follow) scrollToLatest();
   }
   function renderEmpty() {
@@ -82,13 +112,15 @@ window.addEventListener('pywebviewready', async () => {
         entry = {article, original, translation};
         rows.set(row.id, entry);
       }
-      entry.original.textContent = row.text;
-      entry.translation.textContent = row.translation || '';
+      entry.row = row;
+      entry.original.textContent = row.text_lines?.join('\n') ?? row.text;
+      entry.translation.textContent = row.translation_lines?.join('\n') ?? row.translation ?? '';
       entry.translation.hidden = !row.translation;
       entry.article.classList.toggle('has-translation', Boolean(row.translation));
       entry.article.classList.toggle('no-translation', !row.translation);
     }
     if (update.reset || update.transcripts.length) {
+      readableId = latestCaption();
       renderEmpty();
       if (follow) scrollToLatest();
     }
@@ -117,6 +149,8 @@ window.addEventListener('pywebviewready', async () => {
       revision = update.revision;
       session = update.session;
       renderUpdate(update);
+      speech = await api.caption_speech_status();
+      renderSpeech();
     } finally {
       window.setTimeout(refresh, 180);
     }

@@ -52,7 +52,9 @@ def test_final_transcript_translation_is_shared_and_saved():
             assert queue.get_nowait()["translation_status"] == "pending"
             translated = queue.get_nowait()
             assert translated["id"] == "1"
+            assert "".join(translated["text_lines"]) == translated["text"]
             assert translated["translation"] == "The meeting starts now."
+            assert "".join(translated["translation_lines"]) == translated["translation"]
             assert translated["translation_language"] == "en"
         assert session.snapshot()["transcripts"] == [translated]
         assert translator.calls == [("会议现在开始。", "English")]

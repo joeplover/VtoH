@@ -61,7 +61,13 @@ class VtoHApp extends StatelessWidget {
 
 typedef Event = Map<String, dynamic>;
 const _serverPrefix = '/vtoh';
-const _defaultServerUrl = 'https://www.ploverjoe.xyz/vtoh/';
+final _serverUri = Uri.https('www.ploverjoe.xyz', _serverPrefix);
+
+String? _captionText(Event row, String field) {
+  final lines = row['${field}_lines'];
+  return lines is List ? lines.join('\n') : row[field] as String?;
+}
+
 const _translationOptions = {
   '': '关闭翻译',
   'zh': '简体中文',
@@ -89,12 +95,6 @@ class _WorkspaceState extends State<Workspace> {
   static const _native = MethodChannel('vtoh/capture');
   static const _workspace = MethodChannel('vtoh/workspace');
   static const _frames = EventChannel('vtoh/frames');
-  final _server = TextEditingController(
-    text: const String.fromEnvironment(
-      'VTOH_SERVER_URL',
-      defaultValue: _defaultServerUrl,
-    ),
-  );
   final _key = TextEditingController();
   final _transcripts = <String, Event>{};
   final _answers = <String, Event>{};
@@ -119,7 +119,6 @@ class _WorkspaceState extends State<Workspace> {
   bool _expired = false;
   double _level = 0;
   DateTime _lastSound = DateTime.now();
-  Uri? _base;
   String? _id;
   String? _owner;
   String? _viewer;
@@ -211,7 +210,6 @@ class _WorkspaceState extends State<Workspace> {
         'loadConnection',
       );
       if (!mounted || saved == null) return;
-      _server.text = saved['address'] ?? _server.text;
       _key.text = saved['key'] ?? '';
     } on PlatformException {
       _message('无法读取已保存的连接设置，请重新保存。');
@@ -267,8 +265,9 @@ class _WorkspaceState extends State<Workspace> {
             .map(
               (row) => {
                 'id': row['id'],
-                'text': row['text'],
-                'translation': row['translation'] ?? '',
+                'text': _captionText(row, 'text') ?? '',
+                'translation': _captionText(row, 'translation') ?? '',
+                'translation_language': row['translation_language'] ?? '',
               },
             )
             .toList(),
@@ -308,40 +307,27 @@ class _WorkspaceState extends State<Workspace> {
     if (mounted) setState(() => _notice = text);
   }
 
-  Uri _serverUri(String raw) {
-    final uri = Uri.parse(raw.trim().replaceFirst(RegExp(r'/+$'), ''));
-    final path = uri.path.replaceFirst(RegExp(r'/+$'), '');
-    if (!['https', 'http'].contains(uri.scheme) ||
-        uri.host.isEmpty ||
-        uri.hasFragment ||
-        uri.hasQuery ||
-        uri.userInfo.isNotEmpty ||
-        (path.isNotEmpty && path != _serverPrefix)) {
-      throw const FormatException('请输入服务地址，例如 $_defaultServerUrl');
-    }
-    return uri.replace(path: _serverPrefix);
-  }
+  Uri _ws(String path, String token, {String target = ''}) =>
+      _serverUri.replace(
+        scheme: 'wss',
+        path: '$_serverPrefix/sessions/$_id/$path',
+        queryParameters: {
+          'token': token,
+          if (target.isNotEmpty) 'translate': target,
+        },
+      );
 
-  Uri _ws(String path, String token, {String target = ''}) => _base!.replace(
-    scheme: _base!.scheme == 'https' ? 'wss' : 'ws',
-    path: '$_serverPrefix/sessions/$_id/$path',
-    queryParameters: {
-      'token': token,
-      if (target.isNotEmpty) 'translate': target,
-    },
-  );
-
-  Uri get _pairUri => _base!.replace(
+  Uri get _pairUri => _serverUri.replace(
     path: '$_serverPrefix/pair',
     fragment: 'id=$_id&token=$_viewer',
   );
 
-  Future<void> _createSession(Uri base) async {
+  Future<void> _createSession() async {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
     try {
       final request = await client.postUrl(
-        base.replace(path: '$_serverPrefix/sessions'),
+        _serverUri.replace(path: '$_serverPrefix/sessions'),
       );
       request.headers.set('Authorization', 'Bearer ${_key.text}');
       final response = await request.close().timeout(
@@ -355,7 +341,6 @@ class _WorkspaceState extends State<Workspace> {
         throw StateError(response.statusCode == 401 ? '访问密钥有误' : '无法建立会话');
       }
       final data = jsonDecode(body) as Event;
-      _base = base;
       _id = data['id'] as String;
       _owner = data['owner'] as String;
       _viewer = data['viewer'] as String;
@@ -476,18 +461,18 @@ class _WorkspaceState extends State<Workspace> {
       final values = Uri.splitQueryString(uri.fragment);
       final id = values['id'];
       final token = values['token'];
-      if (uri.path != '$_serverPrefix/pair' ||
+      if (uri.origin != _serverUri.origin ||
+          uri.userInfo.isNotEmpty ||
+          uri.path != '$_serverPrefix/pair' ||
           id == null ||
           token == null ||
           !RegExp(r'^[a-f0-9]{32}$').hasMatch(id) ||
           !RegExp(r'^[A-Za-z0-9_-]{32}$').hasMatch(token)) {
         throw const FormatException('配对链接格式有误');
       }
-      final base = _serverUri(uri.origin);
       await _resetUpdates();
       if (!mounted) return;
       setState(() {
-        _base = base;
         _id = id;
         _viewer = token;
         _owner = null;
@@ -501,9 +486,7 @@ class _WorkspaceState extends State<Workspace> {
   }
 
   Future<void> _start() async {
-    if (_key.text.isEmpty &&
-        _serverUri(_defaultServerUrl).toString() ==
-            _server.text.trim().replaceFirst(RegExp(r'/+$'), '')) {
+    if (_key.text.isEmpty) {
       await _openSettings();
       return;
     }
@@ -517,14 +500,12 @@ class _WorkspaceState extends State<Workspace> {
     });
     unawaited(_updateOverlay());
     try {
-      final base = _serverUri(_server.text);
-      if (_base != base ||
-          _owner == null ||
+      if (_owner == null ||
           _sessionKey != _key.text ||
           _expired ||
           _attempts >= 8) {
         await _resetUpdates();
-        await _createSession(base);
+        await _createSession();
         await _connectUpdates(_generation);
       } else if (_updates == null) {
         await _connectUpdates(_generation);
@@ -755,7 +736,6 @@ class _WorkspaceState extends State<Workspace> {
       unawaited(_native.invokeMethod<void>('stop'));
     }
     _helper?.kill();
-    _server.dispose();
     _key.dispose();
     super.dispose();
   }
@@ -998,25 +978,21 @@ class _WorkspaceState extends State<Workspace> {
   );
 
   Future<void> _openSettings() async {
-    final result = await Navigator.of(context).push<(String, String)>(
+    final result = await Navigator.of(context).push<String>(
       MaterialPageRoute(
         builder: (_) => ConnectionSettings(
-          address: _server.text,
           keyValue: _key.text,
-          validate: _serverUri,
           saveConnection: Platform.isAndroid
-              ? (address, key) => _workspace.invokeMethod<void>(
-                  'saveConnection',
-                  {'address': address, 'key': key},
-                )
+              ? (key) => _workspace.invokeMethod<void>('saveConnection', {
+                  'key': key,
+                })
               : null,
         ),
       ),
     );
     if (result == null || !mounted) return;
     setState(() {
-      _server.text = result.$1;
-      _key.text = result.$2;
+      _key.text = result;
       _notice = '';
     });
   }
@@ -1213,14 +1189,14 @@ class _WorkspaceState extends State<Workspace> {
         if (_watching || item['final'] != true)
           ListTile(
             contentPadding: EdgeInsets.zero,
-            title: Text(item['text'] as String),
+            title: Text(_captionText(item, 'text') ?? ''),
             subtitle: item['final'] == true ? null : const Text('转写中'),
           )
         else
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             controlAffinity: ListTileControlAffinity.leading,
-            title: Text(item['text'] as String),
+            title: Text(_captionText(item, 'text') ?? ''),
             value: _selected.contains(item['id']),
             onChanged: (selected) => setState(() {
               final id = item['id'] as String;
@@ -1292,7 +1268,7 @@ class _WorkspaceState extends State<Workspace> {
                 ? '等待电脑的译文。'
                 : _translationTarget.isEmpty
                 ? '选择目标语言后开始监听。'
-                : '每句字幕定稿后显示译文。',
+                : '等待实时译文。',
           ),
         for (final row in rows) ...[
           Text(
@@ -1303,13 +1279,13 @@ class _WorkspaceState extends State<Workspace> {
           ),
           const SizedBox(height: 6),
           SelectableText(
-            row['translation'] as String? ??
+            _captionText(row, 'translation') ??
                 (row['translation_status'] == 'pending' ? '正在翻译…' : '暂无法翻译'),
             style: theme.textTheme.titleMedium,
           ),
           const SizedBox(height: 6),
           SelectableText(
-            row['text'] as String,
+            _captionText(row, 'text') ?? '',
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -1335,23 +1311,18 @@ class _WorkspaceState extends State<Workspace> {
 class ConnectionSettings extends StatefulWidget {
   const ConnectionSettings({
     super.key,
-    required this.address,
     required this.keyValue,
-    required this.validate,
     this.saveConnection,
   });
 
-  final String address;
   final String keyValue;
-  final Uri Function(String) validate;
-  final Future<void> Function(String, String)? saveConnection;
+  final Future<void> Function(String)? saveConnection;
 
   @override
   State<ConnectionSettings> createState() => _ConnectionSettingsState();
 }
 
 class _ConnectionSettingsState extends State<ConnectionSettings> {
-  late final _address = TextEditingController(text: widget.address);
   late final _key = TextEditingController(text: widget.keyValue);
   bool _showKey = false;
   bool _saving = false;
@@ -1363,12 +1334,9 @@ class _ConnectionSettingsState extends State<ConnectionSettings> {
       _error = null;
     });
     try {
-      final address = widget.validate(_address.text);
       final key = _key.text.trim();
-      await widget.saveConnection?.call('$address/', key);
-      if (mounted) Navigator.pop(context, ('$address/', key));
-    } on FormatException catch (error) {
-      if (mounted) setState(() => _error = error.message);
+      await widget.saveConnection?.call(key);
+      if (mounted) Navigator.pop(context, key);
     } on PlatformException {
       if (mounted) setState(() => _error = '无法安全保存连接设置，请重试。');
     } finally {
@@ -1378,7 +1346,6 @@ class _ConnectionSettingsState extends State<ConnectionSettings> {
 
   @override
   void dispose() {
-    _address.dispose();
     _key.dispose();
     super.dispose();
   }
@@ -1395,21 +1362,13 @@ class _ConnectionSettingsState extends State<ConnectionSettings> {
             padding: const EdgeInsets.all(20),
             children: [
               TextField(
-                controller: _address,
-                keyboardType: TextInputType.url,
-                decoration: InputDecoration(
-                  labelText: '服务地址',
-                  errorText: _error,
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
                 controller: _key,
                 obscureText: !_showKey,
                 autocorrect: false,
                 enableSuggestions: false,
                 decoration: InputDecoration(
                   labelText: '访问密钥',
+                  errorText: _error,
                   suffixIcon: IconButton(
                     tooltip: _showKey ? '隐藏密钥' : '显示密钥',
                     onPressed: () => setState(() => _showKey = !_showKey),

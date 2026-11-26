@@ -5,6 +5,7 @@ from collections import OrderedDict
 from time import monotonic
 from uuid import uuid4
 
+from .caption_format import caption_lines
 from .providers import Answers, TRANSLATION_LANGUAGES, Translator
 
 Event = dict
@@ -55,11 +56,13 @@ class Session:
         if previous is not None and (previous["final"] or (previous["text"] == text and not final)):
             return
         event = {"type": "transcript", "id": key, "text": text[:4000], "final": final}
+        event["text_lines"] = caption_lines(event["text"])
         if target:
             event["translation_language"] = target
             event["translation_final"] = False
             if previous and previous.get("translation_language") == target and previous.get("translation"):
                 event["translation"] = previous["translation"]
+                event["translation_lines"] = previous["translation_lines"]
             if (event.get("translation") and previous["text"] == event["text"]
                     and previous["translation_status"] == "ready"):
                 event["translation_status"] = "ready"
@@ -68,6 +71,7 @@ class Session:
                 event["translation_status"] = "pending"
             else:
                 event.pop("translation", None)
+                event.pop("translation_lines", None)
                 event["translation_status"] = "unavailable"
         self.transcripts[key] = event
         if len(self.transcripts) > 250:
@@ -113,9 +117,11 @@ class Session:
             event = {**row}
             if translation is None:
                 event.pop("translation", None)
+                event.pop("translation_lines", None)
                 event["translation_status"] = "unavailable"
             else:
                 event["translation"] = translation
+                event["translation_lines"] = caption_lines(translation)
                 event["translation_status"] = "ready" if matches else "pending"
                 event["translation_final"] = matches and row["final"]
                 if matches:

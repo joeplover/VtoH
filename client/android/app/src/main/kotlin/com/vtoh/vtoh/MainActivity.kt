@@ -37,8 +37,7 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "loadConnection" -> result.success(store.read())
                     "saveConnection" -> {
-                        store.write(requireNotNull(call.argument<String>("address")),
-                            requireNotNull(call.argument<String>("key")))
+                        store.write(requireNotNull(call.argument<String>("key")))
                         result.success(null)
                     }
                     "showOverlay" -> {
@@ -172,7 +171,7 @@ class MainActivity : FlutterActivity() {
         fail("采集窗口已关闭")
         overlayPermission?.success(false)
         overlayPermission = null
-        if (::caption.isInitialized) caption.hide()
+        if (::caption.isInitialized) caption.dispose()
         super.onDestroy()
     }
 

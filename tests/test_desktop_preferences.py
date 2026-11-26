@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -9,6 +10,8 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="requires Windows DPAPI")
 
 if sys.platform == "win32":
+    import win32crypt
+
     from desktop import DesktopBridge
 
 
@@ -26,14 +29,16 @@ def test_overlay_font_is_validated_and_saved(tmp_path):
 def test_connection_settings_survive_restart(tmp_path, monkeypatch):
     monkeypatch.delenv("VTOH_ACCESS_KEY", raising=False)
     path = tmp_path / "connection.dat"
-    first = DesktopBridge(settings_path=path)
-    assert first.save_settings("https://example.com/vtoh", "test-access-secret")["has_key"]
+    legacy = json.dumps({"address": "https://example.com/vtoh", "key": "test-access-secret"})
+    path.write_bytes(win32crypt.CryptProtectData(legacy.encode(), "VtoH", None, None, None, 1))
     assert b"test-access-secret" not in path.read_bytes()
 
     restored = DesktopBridge(settings_path=path)
-    assert restored.settings() == {"address": "https://example.com/vtoh/", "has_key": True}
+    assert restored.settings() == {"has_key": True}
     assert restored.key == "test-access-secret"
-    restored.save_settings("https://example.org/vtoh", None)
+    assert restored.save_settings(None)["has_key"]
+    _, saved = win32crypt.CryptUnprotectData(path.read_bytes(), None, None, None, 1)
+    assert "address" not in json.loads(saved)
     assert DesktopBridge(settings_path=path).key == "test-access-secret"
     assert restored.set_overlay_style("light")
     assert DesktopBridge(settings_path=path).overlay_style() == "light"
