@@ -32,8 +32,8 @@ internal class FloatingCaption(
     private var style = prefs.getString("overlay_style", "standard").orEmpty()
     private var mode = prefs.getString("overlay_mode", "bilingual").orEmpty()
     private var fontSize = prefs.getInt("overlay_font_size", 18)
-    private val history = linkedMapOf<String, Map<String, String>>()
-    private val visibleRows = mutableMapOf<String, Triple<LinearLayout, TextView, TextView>>()
+    private val history = linkedMapOf<String, CaptionRow>()
+    private val visibleRows = mutableMapOf<String, VisibleRow>()
     private var scroll: ScrollView? = null
     private var list: LinearLayout? = null
     private var empty: TextView? = null
@@ -47,7 +47,13 @@ internal class FloatingCaption(
     private var speechReady = false
     private var speechRequest: SpeechRequest? = null
     private var speechRevision = 0
+    private var selection: Selection? = null
 
+    private data class CaptionRow(val id: String, val original: List<String>,
+        val translation: List<String>, val language: String)
+    private data class VisibleRow(val container: LinearLayout, val original: LinearLayout,
+        val translation: LinearLayout)
+    private data class Selection(val id: String, val translated: Boolean, val index: Int, val text: String)
     private data class SpeechRequest(val text: String, val locale: Locale, val id: String)
 
     private fun dp(size: Int) = (context.resources.displayMetrics.density * size).toInt()
@@ -128,7 +134,7 @@ internal class FloatingCaption(
         }
         val speakAction = label("朗读", 12, Color.WHITE).apply {
             gravity = Gravity.CENTER
-            setOnClickListener { if (speechRequest == null) readLatest() else stopSpeech() }
+            setOnClickListener { if (speechRequest == null) readSelection() else stopSpeech() }
         }
         val resize = label("↘", 22, Color.WHITE).apply {
             gravity = Gravity.CENTER
@@ -182,17 +188,20 @@ internal class FloatingCaption(
         stopButton?.visibility = if (canStop) View.VISIBLE else View.GONE
     }
 
-    fun updateHistory(rows: List<Map<String, String>>, reset: Boolean) {
+    fun updateHistory(rows: List<Map<String, Any>>, reset: Boolean) {
         val viewport = scroll
         val autoFollow = viewport != null && (reset || followPending || !viewport.canScrollVertically(1))
         if (reset) {
+            select(null)
             stopSpeech()
             history.clear()
-            visibleRows.values.forEach { list?.removeView(it.first) }
+            visibleRows.values.forEach { list?.removeView(it.container) }
             visibleRows.clear()
         }
-        for (row in rows) {
-            val id = row["id"] ?: continue
+        for (data in rows) {
+            val id = data["id"] as? String ?: continue
+            val row = CaptionRow(id, segments(data["text_lines"]), segments(data["translation_lines"]),
+                data["translation_language"] as? String ?: "")
             history[id] = row
             renderRow(row)
         }
@@ -200,6 +209,9 @@ internal class FloatingCaption(
         updateSpeechButton()
         if (viewport != null && autoFollow) follow(viewport)
     }
+
+    private fun segments(value: Any?): List<String> =
+        (value as? List<*>).orEmpty().filterIsInstance<String>().map(String::trim).filter(String::isNotEmpty)
 
     private fun follow(viewport: ScrollView) {
         if (followPending) return
@@ -221,40 +233,74 @@ internal class FloatingCaption(
         val autoFollow = viewport != null && (followPending || !viewport.canScrollVertically(1))
         prefs.edit().putString("overlay_mode", value).apply()
         mode = value
+        if (mode == "translation" && selection?.translated == false) select(null)
         stopSpeech()
         for (row in history.values) renderRow(row)
         renderEmpty()
         if (viewport != null && autoFollow) follow(viewport)
     }
 
-    private fun renderRow(row: Map<String, String>) {
+    private fun renderRow(row: CaptionRow) {
         val container = list ?: return
-        val id = row.getValue("id")
-        val (line, original, translation) = visibleRows.getOrPut(id) {
+        val (line, original, translation) = visibleRows.getOrPut(row.id) {
             val line = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, dp(4), dp(8), dp(7))
             }
-            val original = label("", fontSize, Color.WHITE).apply { maxLines = Int.MAX_VALUE; ellipsize = null }
-            val translation = label("", (fontSize - 1).coerceAtLeast(12), 0xffffdf9f.toInt()).apply { maxLines = Int.MAX_VALUE; ellipsize = null }
+            val original = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+            val translation = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
             line.addView(original)
             line.addView(translation)
             container.addView(line)
-            Triple(line, original, translation)
+            VisibleRow(line, original, translation)
         }
         val only = mode == "translation"
-        val translated = row["translation"].orEmpty()
-        original.text = row["text"].orEmpty()
+        renderSegments(row.id, original, row.original, translated = false)
+        renderSegments(row.id, translation, row.translation, translated = true)
         original.visibility = if (only) View.GONE else View.VISIBLE
-        translation.text = translated
-        translation.visibility = if (translated.isEmpty()) View.GONE else View.VISIBLE
-        line.visibility = if (only && translated.isEmpty()) View.GONE else View.VISIBLE
+        translation.visibility = if (row.translation.isEmpty()) View.GONE else View.VISIBLE
+        line.visibility = if (only && row.translation.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    private fun renderSegments(id: String, group: LinearLayout, lines: List<String>, translated: Boolean) {
+        val selected = selection
+        if (selected?.id == id && selected.translated == translated &&
+            lines.getOrNull(selected.index) != selected.text) select(null)
+        while (group.childCount > lines.size) group.removeViewAt(group.childCount - 1)
+        for ((index, text) in lines.withIndex()) {
+            val view = group.getChildAt(index) as? TextView ?: label("", captionSize(translated),
+                if (translated) 0xffffdf9f.toInt() else Color.WHITE).apply {
+                maxLines = Int.MAX_VALUE
+                ellipsize = null
+                setPadding(dp(6), dp(3), dp(6), dp(3))
+                setOnClickListener { select(Selection(id, translated, index, this.text.toString())) }
+                group.addView(this, LinearLayout.LayoutParams(-1, -2))
+            }
+            if (view.text.toString() != text) view.text = text
+        }
+    }
+
+    private fun select(value: Selection?) {
+        paintSelection(selection, false)
+        selection = value
+        paintSelection(value, true)
+        updateSpeechButton()
+    }
+
+    private fun paintSelection(target: Selection?, selected: Boolean) {
+        if (target == null) return
+        val row = visibleRows[target.id] ?: return
+        val group = if (target.translated) row.translation else row.original
+        group.getChildAt(target.index)?.apply {
+            isSelected = selected
+            setBackgroundColor(if (selected) 0xff364740.toInt() else Color.TRANSPARENT)
+        }
     }
 
     private fun renderEmpty() {
         empty?.apply {
             val only = mode == "translation"
-            val hasRows = if (only) history.values.any { !it["translation"].isNullOrEmpty() } else history.isNotEmpty()
+            val hasRows = if (only) history.values.any { it.translation.isNotEmpty() } else history.isNotEmpty()
             text = if (only) "等待译文 · 请在主界面选择目标语言" else "等待实时字幕"
             visibility = if (hasRows) View.GONE else View.VISIBLE
         }
@@ -264,11 +310,21 @@ internal class FloatingCaption(
 
     fun font() = fontSize
 
+    private fun captionSize(translated: Boolean) =
+        if (translated) (fontSize - 1).coerceAtLeast(12) else fontSize
+
     fun setFont(value: Int) {
         require(value in 12..36)
         prefs.edit().putInt("overlay_font_size", value).apply()
         fontSize = value
-        visibleRows.values.forEach { it.second.textSize = value.toFloat(); it.third.textSize = (value - 1).coerceAtLeast(12).toFloat() }
+        for (row in visibleRows.values) {
+            for (index in 0 until row.original.childCount) {
+                (row.original.getChildAt(index) as TextView).textSize = captionSize(false).toFloat()
+            }
+            for (index in 0 until row.translation.childCount) {
+                (row.translation.getChildAt(index) as TextView).textSize = captionSize(true).toFloat()
+            }
+        }
     }
 
     fun setStyle(value: String) {
@@ -284,6 +340,7 @@ internal class FloatingCaption(
     }
 
     fun hide() {
+        select(null)
         stopSpeech()
         root?.let { manager.removeViewImmediate(it) }
         root = null
@@ -303,26 +360,26 @@ internal class FloatingCaption(
         speechReady = false
     }
 
-    private fun latestReadable() = history.values.lastOrNull {
-        !it["translation"].isNullOrBlank() || (mode == "bilingual" && !it["text"].isNullOrBlank())
-    }
-
     private fun updateSpeechButton() {
         speechButton?.apply {
-            text = if (speechRequest == null) "朗读" else "停止朗读"
-            contentDescription = if (speechRequest == null) "朗读最新字幕" else "停止朗读"
-            isEnabled = speechRequest != null || latestReadable() != null
+            text = when {
+                speechRequest != null -> "停止朗读"
+                selection != null -> "朗读"
+                else -> "选句朗读"
+            }
+            contentDescription = if (selection == null && speechRequest == null) "选择一句字幕后朗读" else text
+            isEnabled = speechRequest != null || selection != null
             alpha = if (isEnabled) 1f else .5f
         }
     }
 
-    private fun readLatest() {
-        val row = latestReadable() ?: return
-        val translated = row["translation"].orEmpty()
-        val text = translated.ifBlank { row["text"].orEmpty() }
-        val language = row["translation_language"].orEmpty()
+    private fun readSelection() {
+        val target = selection ?: return
+        val row = history[target.id] ?: return
+        val text = target.text
+        val language = if (target.translated) row.language else ""
         val locale = when {
-            translated.isNotBlank() && language.isNotBlank() -> Locale.forLanguageTag(language)
+            language.isNotBlank() -> Locale.forLanguageTag(language)
             text.any { it in '\u3040'..'\u30ff' } -> Locale.JAPANESE
             text.any { it in '\uac00'..'\ud7af' } -> Locale.KOREAN
             text.any { it in '\u3400'..'\u9fff' } -> Locale.SIMPLIFIED_CHINESE

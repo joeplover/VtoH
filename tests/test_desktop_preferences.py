@@ -91,6 +91,36 @@ def test_overlay_keeps_all_rows_and_updates_translation_in_place(tmp_path):
     assert not bridge.overlay_caption()["transcripts"]
 
 
+@pytest.mark.parametrize(
+    ("mode", "field", "text", "language"),
+    [
+        ("bilingual", "text", "第二小段", ""),
+        ("bilingual", "translation", "First.", "en"),
+        ("translation", "translation", "First.", "en"),
+        ("translation", "text", "第二小段", None),
+        ("bilingual", "translation", "已经更新的译文", None),
+        ("bilingual", "text", "兼容旧版本", ""),
+    ],
+)
+def test_overlay_speaks_only_the_selected_segment(tmp_path, monkeypatch, mode, field, text, language):
+    bridge = DesktopBridge(settings_path=tmp_path / "connection.dat")
+    assert bridge.set_overlay_mode(mode)
+    bridge._record_caption({"type": "transcript", "id": "1", "text": "第一小段 第二小段",
+                            "text_lines": ["第一小段 ", "第二小段"], "translation": "First. Second.",
+                            "translation_lines": ["First. ", "Second."], "translation_language": "en"})
+    bridge._record_caption({"type": "transcript", "id": "legacy", "text": "兼容旧版本"})
+    bridge._record_caption({"type": "transcript", "id": "new", "text": "最新一句"})
+    thread = Mock()
+    monkeypatch.setattr("desktop.threading.Thread", thread)
+    identifier = "legacy" if text == "兼容旧版本" else "1"
+    assert bridge.speak_caption(identifier, field, text) is (language is not None)
+    if language is None:
+        thread.assert_not_called()
+    else:
+        assert thread.call_args.kwargs["args"][:2] == (text, language)
+        thread.return_value.start.assert_called_once()
+
+
 def test_capture_can_stop_when_audio_source_stalls(tmp_path, monkeypatch):
     async def run():
         bridge = DesktopBridge(settings_path=tmp_path / "connection.dat")

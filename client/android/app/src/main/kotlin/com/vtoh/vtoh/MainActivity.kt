@@ -66,7 +66,7 @@ class MainActivity : FlutterActivity() {
                     }
                     "updateOverlayHistory" -> {
                         caption.updateHistory(
-                            call.argument<List<Map<String, String>>>("rows").orEmpty(),
+                            call.argument<List<Map<String, Any>>>("rows").orEmpty(),
                             call.argument<Boolean>("reset") == true
                         )
                         result.success(null)

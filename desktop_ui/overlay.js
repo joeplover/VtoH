@@ -17,29 +17,35 @@ window.addEventListener('pywebviewready', async () => {
   let revision = -1;
   let session = null;
   let drag;
-  let readableId;
+  let selection = null;
   let speech = {speaking: false, error: ''};
-  function latestCaption() {
-    return [...rows.values()].reverse().find(({row}) =>
-      row.translation?.trim() || (mode.value === 'bilingual' && row.text.trim())
-    )?.row.id;
+  let requestingSpeech = false;
+  function selectCaption(next) {
+    selection?.button.setAttribute('aria-pressed', 'false');
+    selection = next;
+    selection?.button.setAttribute('aria-pressed', 'true');
+    renderSpeech();
   }
   function renderSpeech() {
-    speak.textContent = speech.speaking ? '停止朗读' : '朗读';
-    speak.disabled = !speech.speaking && readableId === undefined;
+    speak.textContent = speech.speaking ? '停止朗读' : selection ? '朗读' : '选句朗读';
+    speak.title = speech.speaking ? '停止朗读' : selection ? '朗读选中字幕' : '选择一句字幕后朗读';
+    speak.disabled = requestingSpeech || (!speech.speaking && !selection);
     speechError.textContent = speech.error;
     speechError.hidden = !speech.error;
   }
   speak.onclick = async () => {
-    speak.disabled = true;
+    requestingSpeech = true;
+    renderSpeech();
     try {
       if (speech.speaking) {
         await api.stop_caption_speech();
-      } else {
-        await api.speak_caption(readableId);
+      } else if (selection) {
+        const {id, field, text} = selection;
+        await api.speak_caption(id, field, text);
       }
       speech = await api.caption_speech_status();
     } finally {
+      requestingSpeech = false;
       renderSpeech();
     }
   };
@@ -83,7 +89,7 @@ window.addEventListener('pywebviewready', async () => {
     const only = mode.value === 'translation';
     captions.classList.toggle('translation-only', only);
     renderEmpty();
-    readableId = latestCaption();
+    if (only && selection?.field === 'text') selectCaption(null);
     renderSpeech();
     if (follow) scrollToLatest();
   }
@@ -95,32 +101,32 @@ window.addEventListener('pywebviewready', async () => {
   function renderUpdate(update) {
     const follow = update.reset || atBottom();
     if (update.reset) {
+      selectCaption(null);
       rows.clear();
       captions.replaceChildren();
     }
+    if (update.overlay_open === false && selection) selectCaption(null);
     for (const row of update.transcripts) {
       let entry = rows.get(row.id);
       if (!entry) {
         const article = document.createElement('article');
         article.className = 'caption';
-        const original = document.createElement('p');
+        const original = document.createElement('div');
         original.className = 'original';
-        const translation = document.createElement('p');
+        const translation = document.createElement('div');
         translation.className = 'translation';
         article.append(original, translation);
         captions.append(article);
         entry = {article, original, translation};
         rows.set(row.id, entry);
       }
-      entry.row = row;
-      entry.original.textContent = row.text_lines?.join('\n') ?? row.text;
-      entry.translation.textContent = row.translation_lines?.join('\n') ?? row.translation ?? '';
-      entry.translation.hidden = !row.translation;
-      entry.article.classList.toggle('has-translation', Boolean(row.translation));
-      entry.article.classList.toggle('no-translation', !row.translation);
+      renderSegments(entry.original, row, 'text');
+      renderSegments(entry.translation, row, 'translation');
+      const hasTranslation = entry.translation.childElementCount > 0;
+      entry.article.classList.toggle('has-translation', hasTranslation);
+      entry.article.classList.toggle('no-translation', !hasTranslation);
     }
     if (update.reset || update.transcripts.length) {
-      readableId = latestCaption();
       renderEmpty();
       if (follow) scrollToLatest();
     }
@@ -128,6 +134,27 @@ window.addEventListener('pywebviewready', async () => {
       idle: '开始监听', starting: '取消连接', live: '停止监听', stopping: '正在停止',
     }[update.phase] || '开始监听';
     toggle.disabled = !update.phase || update.phase === 'stopping';
+  }
+  function renderSegments(container, row, field) {
+    const lines = (row[`${field}_lines`] ?? (row[field] || '').split('\n'))
+      .map((line) => line.trim()).filter(Boolean);
+    while (container.childElementCount > lines.length) container.lastElementChild.remove();
+    for (const [index, text] of lines.entries()) {
+      let button = container.children[index];
+      if (!button) {
+        button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'caption-segment';
+        button.setAttribute('aria-pressed', 'false');
+        button.onclick = () => selectCaption({id: row.id, field, button, text: button.textContent});
+        container.append(button);
+      }
+      if (button.textContent !== text) button.textContent = text;
+    }
+    if (selection?.id === row.id && selection.field === field &&
+        (!container.contains(selection.button) || selection.text !== selection.button.textContent)) {
+      selectCaption(null);
+    }
   }
   mode.onchange = async () => {
     renderMode();

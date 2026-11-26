@@ -362,25 +362,29 @@ class DesktopBridge:
                 self._speech_stop.set()
             self._speech_error = ""
 
-    def speak_caption(self, identifier):
-        if not isinstance(identifier, str):
-            return
+    def speak_caption(self, identifier, field, text):
+        if not isinstance(identifier, str) or field not in ("text", "translation"):
+            return False
+        if not isinstance(text, str) or not text.strip():
+            return False
         with self._caption_lock:
             row = self._caption_rows.get(identifier)
-            if row is None:
-                return
+            if row is None or (field == "text" and self._overlay_mode != "bilingual"):
+                return False
             caption = row[1]
-            translation = caption.get("translation", "").strip()
-            text = translation or (caption["text"].strip() if self._overlay_mode == "bilingual" else "")
-            if not text:
-                return
-            language = caption.get("translation_language", "") if translation else ""
+            segments = caption.get(f"{field}_lines")
+            if segments is None:
+                segments = caption.get(field, "").split("\n")
+            if not any(text == segment.strip() for segment in segments):
+                return False
+            language = caption.get("translation_language", "") if field == "translation" else ""
             with self._speech_lock:
                 if self._speech_stop is not None:
-                    return
+                    return False
                 stop = self._speech_stop = threading.Event()
                 self._speech_error = ""
         threading.Thread(target=self._play_caption, args=(text, language, stop), daemon=True).start()
+        return True
 
     def _play_caption(self, text, language, stop):
         error = ""

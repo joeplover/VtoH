@@ -68,6 +68,13 @@ String? _captionText(Event row, String field) {
   return lines is List ? lines.join('\n') : row[field] as String?;
 }
 
+List<String> _captionSegments(Event row, String field) {
+  final lines = row['${field}_lines'];
+  return lines is List
+      ? lines.cast<String>()
+      : (row[field] as String? ?? '').split('\n');
+}
+
 const _translationOptions = {
   '': '关闭翻译',
   'zh': '简体中文',
@@ -270,8 +277,8 @@ class _WorkspaceState extends State<Workspace> {
             .map(
               (row) => {
                 'id': row['id'],
-                'text': _captionText(row, 'text') ?? '',
-                'translation': _captionText(row, 'translation') ?? '',
+                'text_lines': _captionSegments(row, 'text'),
+                'translation_lines': _captionSegments(row, 'translation'),
                 'translation_language': row['translation_language'] ?? '',
               },
             )
