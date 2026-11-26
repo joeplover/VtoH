@@ -30,7 +30,8 @@ jobs:
         run: |
           app=build/ios/iphoneos/Runner.app
           /usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist"
-          lipo -verify_arch arm64 "$app/Runner"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Info.plist")
+          lipo "$app/$executable" -verify_arch arm64
           mkdir -p "$RUNNER_TEMP/vtoh/Payload"
           ditto "$app" "$RUNNER_TEMP/vtoh/Payload/Runner.app"
           cd "$RUNNER_TEMP/vtoh"
