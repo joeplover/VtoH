@@ -677,7 +677,10 @@ class _WorkspaceState extends State<Workspace> {
       return;
     }
     socket.add(jsonEncode({'type': 'answer', 'ids': _selected.toList()}));
-    setState(_selected.clear);
+    setState(() {
+      _selected.clear();
+      if (MediaQuery.sizeOf(context).width < 760) _view = WorkspaceView.answers;
+    });
   }
 
   Future<void> _scan() async {
@@ -837,7 +840,8 @@ class _WorkspaceState extends State<Workspace> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 10, 20, 24),
               children: [
-                _capturePanel(state, picking, showAction: wide),
+                if (wide || _view != WorkspaceView.answers)
+                  _capturePanel(state, picking, showAction: wide),
                 if (_notice.isNotEmpty || silence)
                   Padding(
                     padding: const EdgeInsets.only(top: 10),
@@ -851,7 +855,8 @@ class _WorkspaceState extends State<Workspace> {
                       ),
                     ),
                   ),
-                const SizedBox(height: 18),
+                if (wide || _view != WorkspaceView.answers)
+                  const SizedBox(height: 14),
                 if (!wide)
                   _currentPanel(_view)
                 else
@@ -886,9 +891,9 @@ class _WorkspaceState extends State<Workspace> {
                       return Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Expanded(flex: 6, child: content),
-                          const SizedBox(width: 18),
-                          Expanded(flex: 5, child: _answerPanel()),
+                          Expanded(child: content),
+                          const SizedBox(width: 14),
+                          Expanded(child: _answerPanel()),
                         ],
                       );
                     },
@@ -1217,45 +1222,79 @@ class _WorkspaceState extends State<Workspace> {
     ],
   );
 
-  Widget _answerPanel({bool showTitle = true}) => _surface(
-    children: [
-      if (showTitle) Text('问答', style: Theme.of(context).textTheme.titleLarge),
-      if (_answers.isEmpty) _empty(Icons.question_answer_outlined, '等待完整的问题。'),
-      for (final answer in _answers.values.toList().reversed)
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                answer['question'] as String,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              SelectableText(answer['conclusion'] as String),
-              for (final point in (answer['points'] as List<dynamic>))
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Padding(
-                        padding: EdgeInsets.only(right: 8),
-                        child: Text('•'),
-                      ),
-                      Expanded(child: SelectableText('$point')),
-                    ],
-                  ),
-                ),
-              const SizedBox(height: 12),
-              const Divider(height: 1),
-            ],
+  Widget _answerPanel() {
+    final theme = Theme.of(context);
+    final answers = _answers.values.toList().reversed.toList();
+    return _surface(
+      children: [
+        Text('问答', style: theme.textTheme.titleLarge),
+        if (answers.isEmpty)
+          _empty(Icons.question_answer_outlined, '等待完整的问题。')
+        else ...[
+          const SizedBox(height: 14),
+          Text(
+            answers.first['question'] as String,
+            style: theme.textTheme.titleMedium,
           ),
+          const SizedBox(height: 8),
+          _answerBody(answers.first),
+          for (final answer in answers.skip(1)) ...[
+            const Divider(height: 16),
+            ExpansionTile(
+              key: PageStorageKey(answer['id'] as String),
+              tilePadding: EdgeInsets.zero,
+              title: Text(answer['question'] as String),
+              children: [_answerBody(answer)],
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+
+  Widget _answerBody(Event answer) {
+    final theme = Theme.of(context);
+    final conclusion = answer['conclusion'] as String;
+    final points = (answer['points'] as List<dynamic>).cast<String>();
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SelectableText(conclusion, style: theme.textTheme.titleSmall),
+            for (final point in points)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: SelectableText('•  $point'),
+              ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                icon: const Icon(Icons.copy_outlined, size: 16),
+                label: const Text('复制答案'),
+                onPressed: () async {
+                  final text = [
+                    conclusion,
+                    ...points.map((point) => '• $point'),
+                  ];
+                  await Clipboard.setData(ClipboardData(text: text.join('\n')));
+                  if (!mounted) return;
+                  ScaffoldMessenger.of(context)
+                    ..hideCurrentSnackBar()
+                    ..showSnackBar(const SnackBar(content: Text('答案已复制')));
+                },
+              ),
+            ),
+          ],
         ),
-    ],
-  );
+      ),
+    );
+  }
 
   Widget _translationPanel() {
     final rows = _transcripts.values

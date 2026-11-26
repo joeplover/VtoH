@@ -2,6 +2,7 @@ import asyncio
 import logging
 import secrets
 from collections import OrderedDict
+from itertools import count
 from time import monotonic
 from uuid import uuid4
 
@@ -29,7 +30,8 @@ class Session:
         self.transcripts: OrderedDict[str, Event] = OrderedDict()
         self.answers: OrderedDict[tuple[str, ...], Event] = OrderedDict()
         self.subscribers: set[asyncio.Queue[Event]] = set()
-        self.jobs: asyncio.Queue[tuple[tuple[str, ...], str, str, bool]] = asyncio.Queue(32)
+        self.jobs: asyncio.PriorityQueue[tuple[int, int, tuple[str, ...], str, str]] = asyncio.PriorityQueue(32)
+        self.job_order = count()
         self.worker: asyncio.Task | None = None
         self.pending: tuple[str, ...] = ()
 
@@ -135,29 +137,38 @@ class Session:
         if not selected_ids or len(selected_ids) != len(ids):
             self.publish({"type": "error", "message": "请选择已定稿的字幕。"})
             return
-        previous = [text for key, text in finals.items() if key not in selected_ids]
-        context = "\n".join(previous[-8:])[-6000:]
+        previous = []
+        for key, text in finals.items():
+            if key == selected_ids[-1]:
+                break
+            if key not in selected_ids:
+                previous.append(text)
+        context = "\n".join(previous[-8:])[-3000:]
         selected = "\n".join(finals[key] for key in selected_ids)
         if self.jobs.full():
             self.publish({"type": "error", "message": "待回答内容过多，请稍后手动重试。"})
             return
-        self.jobs.put_nowait((selected_ids, context, selected, manual))
+        self.jobs.put_nowait((0 if manual else 1, next(self.job_order), selected_ids, context, selected))
         if self.worker is None or self.worker.done():
             self.worker = asyncio.create_task(self.answer_jobs())
 
     async def answer_jobs(self) -> None:
         while not self.jobs.empty():
-            ids, context, selected, manual = self.jobs.get_nowait()
+            priority, _, ids, context, selected = self.jobs.get_nowait()
+            manual = priority == 0
             cached = self.answers.get(ids)
             if cached is None and len(ids) == 1:
                 cached = next((answer for keys, answer in reversed(self.answers.items()) if keys[-1] == ids[0]), None)
             if cached is not None:
                 if manual:
                     self.publish(cached)
+                else:
+                    self.pending = ()
                 continue
             try:
                 decision = await self.model.decide(context, selected, manual)
-            except Exception:
+            except Exception as error:
+                logger.warning("answer request failed: %s", type(error).__name__)
                 self.publish({"type": "error", "message": "问答服务暂不可用，请稍后点「回答这段」重试。"})
                 continue
             if not manual and decision.pending:

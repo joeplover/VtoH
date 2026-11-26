@@ -111,18 +111,36 @@ function updateTranscript(row) {
   updateControls();
 }
 
-function renderAnswers() {
-  const cards = [...answers.values()].reverse().map((answer) => {
-    const card = node('article', '', 'entry');
-    card.append(node('h2', answer.question, 'answer-title'), node('p', answer.conclusion, 'answer-text'));
+function renderAnswers(openAnswer, collapseAnswer) {
+  const stream = byId('answers');
+  const expanded = new Set([...stream.querySelectorAll('details[open]')].map((item) => item.dataset.id));
+  expanded.delete(collapseAnswer);
+  const initialize = !stream.querySelector('details');
+  const cards = [...answers.values()].reverse().map((answer, index) => {
+    const card = node('details', '', 'answer-card');
+    card.dataset.id = answer.id;
+    card.open = expanded.has(answer.id) || answer.id === openAnswer || (initialize && index === 0);
+    const body = node('div', '', 'answer-body');
+    body.append(node('p', answer.conclusion, 'answer-text'));
     if (answer.points.length) {
       const list = node('ul');
       list.append(...answer.points.map((point) => node('li', point)));
-      card.append(list);
+      body.append(list);
     }
+    const copy = node('button', '复制答案', 'quiet answer-copy');
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText([answer.conclusion, ...answer.points.map((point) => `• ${point}`)].join('\n'));
+        copy.textContent = '已复制';
+      } catch {
+        copy.textContent = '复制失败';
+      }
+    };
+    body.append(copy);
+    card.append(node('summary', answer.question), body);
     return card;
   });
-  byId('answers').replaceChildren(...(cards.length ? cards : [
+  stream.replaceChildren(...(cards.length ? cards : [
     node('p', '识别到完整问题后，答案会显示在这里。', 'empty'),
   ]));
 }
@@ -181,11 +199,15 @@ function applyEvent(event) {
     case 'transcript':
       updateTranscript(event);
       return;
-    case 'answer':
+    case 'answer': {
+      const isNew = !answers.has(event.id);
+      const previous = [...answers.keys()].at(-1);
       answers.set(event.id, event);
       if (answers.size > 120) answers.delete(answers.keys().next().value);
-      renderAnswers();
+      const showLatest = isNew && byId('answers').scrollTop < 24;
+      renderAnswers(showLatest ? event.id : undefined, showLatest ? previous : undefined);
       return;
+    }
     case 'pair':
       pairImage = event.image;
       pairUrl = event.url;
@@ -267,6 +289,12 @@ byId('copy-pair').addEventListener('click', async () => {
 byId('answer').addEventListener('click', async () => {
   const result = await api.answer([...selected]);
   if (result.error) notice(result.error, true);
+});
+byId('answer-focus').addEventListener('click', () => {
+  const expanded = byId('panes').classList.toggle('answer-focus');
+  byId('captions-pane').hidden = expanded;
+  byId('answer-focus').setAttribute('aria-pressed', String(expanded));
+  byId('answer-focus').textContent = expanded ? '恢复双栏' : '展开问答';
 });
 byId('capture').addEventListener('click', async () => {
   if (phase === 'live' || phase === 'starting') {

@@ -45,6 +45,8 @@ def create_app(
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            if isinstance(answers, ChatCompletions):
+                await answers.close()
 
     prefix = "/vtoh"
     app = FastAPI(

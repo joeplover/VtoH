@@ -28,6 +28,23 @@ class Speech:
             yield (str(text), text, True)
 
 
+def test_manual_question_moves_ahead_of_queued_auto_questions():
+    async def run():
+        model = Answers()
+        session = Session(model)
+        session.put_transcript("1", "第一个问题？", True)
+        session.put_transcript("2", "第二个问题？", True)
+        session.enqueue(("2",), manual=True)
+        await session.worker
+
+        assert model.calls == [
+            ("第一个问题？", "第二个问题？", True),
+            ("", "第一个问题？", False),
+        ]
+
+    asyncio.run(run())
+
+
 def test_final_transcript_translation_is_shared_and_saved():
     class Translator:
         def __init__(self):

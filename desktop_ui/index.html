@@ -37,8 +37,8 @@
         </select></label>
       </div>
     </section>
-    <div class="panes">
-      <section class="pane" aria-label="字幕和翻译">
+    <div class="panes" id="panes">
+      <section class="pane" id="captions-pane" aria-label="字幕和翻译">
         <div class="pane-bar">
           <div class="tabs" role="group" aria-label="字幕视图">
             <button id="originals" aria-pressed="true">原文</button>
@@ -49,8 +49,11 @@
         <div id="transcripts" class="stream" tabindex="0"></div>
       </section>
       <section class="pane answers" aria-label="问答">
-        <div class="pane-bar"><h2>问答</h2></div>
-        <div id="answers" class="stream" tabindex="0"></div>
+        <div class="pane-bar">
+          <h2>问答</h2>
+          <button id="answer-focus" class="quiet" aria-pressed="false">展开问答</button>
+        </div>
+        <div id="answers" class="stream" tabindex="0" aria-label="回答记录"></div>
       </section>
     </div>
     <footer class="dock">

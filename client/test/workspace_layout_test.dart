@@ -24,6 +24,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('等待完整的问题。'), findsOneWidget);
+    expect(find.text('麦克风'), findsNothing);
+    expect(find.text('开始监听'), findsOneWidget);
     expect(find.text('开始监听后，字幕会显示在这里。'), findsNothing);
     await tester.tap(find.text('翻译'));
     await tester.pumpAndSettle();

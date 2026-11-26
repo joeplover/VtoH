@@ -12,7 +12,7 @@ VtoH 将播放声音或麦克风音频转成实时字幕，在听到完整的问
 - 悬浮窗可以调整字体。Windows 在悬浮窗顶部选择字体和字号，Android 在悬浮字幕菜单中选择字号。选择会记住。
 - 长字幕和译文优先在标点和空格处分段。点击浮窗的「朗读」可播放最新字幕，优先读译文，「仅译文」模式只读已有译文。朗读调用系统文字转语音。Windows 默认播放设备采集和 Android 麦克风采集可能收进朗读声。
 
-开通阿里云百炼的中国内地（北京）工作空间，创建一个 DashScope API Key。默认的 Paraformer 实时语音识别和 Qwen Plus 共用这个密钥。
+开通阿里云百炼的中国内地（北京）工作空间，创建一个 DashScope API Key。默认的 Paraformer 实时语音识别和问答模型 `qwen-flash` 共用这个密钥。问答使用非思考模式。若部署环境已设置 `VTOH_CHAT_MODEL`，将它更新为 `qwen-flash`。模型覆盖仅接受 Flash 型号。
 
 - [阿里云百炼控制台](https://bailian.console.aliyun.com/)
 - [获取 API Key](https://help.aliyun.com/zh/model-studio/get-api-key)
