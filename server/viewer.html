@@ -11,6 +11,7 @@ h1 { font-size: clamp(26px, 5vw, 38px); margin: 12px 0 20px; letter-spacing: -.0
 h2 { margin: 0 0 20px; font-size: 18px; }
 #status { color: #185b43; font-size: 14px; }
 #error { color: #852b27; }
+#answer-state { color: #185b43; font-size: 13px; font-weight: 400; }
 main { display: grid; grid-template-columns: 3fr 2fr; gap: 36px; margin-top: 30px; }
 section { min-width: 0; }
 article { padding: 18px; background: white; border: 1px solid #dce5de; border-radius: 12px; margin: 0 0 12px; overflow-wrap: anywhere; }
@@ -26,7 +27,7 @@ li { margin-top: 6px; }
 <header><h1>实时问答</h1><span id="status" role="status">正在连接</span></header>
 <p id="error" role="alert" hidden></p>
 <main>
-  <section><h2>答案</h2><div id="answers"></div></section>
+  <section><h2>答案 <small id="answer-state" aria-live="polite"></small></h2><div id="answers"></div></section>
   <section><h2>实时字幕</h2><div id="transcripts"></div></section>
 </main>
 <script>
@@ -34,6 +35,7 @@ const pair = new URLSearchParams(location.hash.slice(1));
 const status = document.getElementById('status');
 const error = document.getElementById('error');
 const answers = new Map();
+let answerStatus = null;
 const transcripts = new Map();
 let recording = false;
 let expired = false;
@@ -67,8 +69,20 @@ function render() {
     }
     return subtitle;
   });
+  if (answerStatus?.state === 'generating' && answerStatus.conclusion) {
+    const progress = element('article');
+    progress.append(element('h3', answerStatus.question), element('p', answerStatus.conclusion));
+    answerItems.unshift(progress);
+  }
   document.getElementById('answers').replaceChildren(
     ...(answerItems.length ? answerItems : [element('p', '等待完整的问题。', 'empty')]));
+  document.getElementById('answer-state').textContent = {
+    queued: '已提交，等待生成',
+    generating: answerStatus?.conclusion ? '正在补全回答' : '正在生成回答',
+    waiting: '等待完整问题',
+    error: answerStatus?.message || '回答生成失败',
+    complete: '回答已完成',
+  }[answerStatus?.state] || '';
   document.getElementById('transcripts').replaceChildren(
     ...(subtitleItems.length ? subtitleItems : [element('p', '等待电脑开始监听。', 'empty')]));
 }
@@ -84,6 +98,7 @@ function connect() {
       delay = 800;
       error.hidden = true;
       answers.clear();
+      answerStatus = event.answer_status ?? null;
       transcripts.clear();
       event.answers.forEach(row => answers.set(row.id, row));
       event.transcripts.forEach(row => transcripts.set(row.id, row));
@@ -98,6 +113,7 @@ function connect() {
       answers.set(event.id, event);
       if (answers.size > 120) answers.delete(answers.keys().next().value);
     }
+    if (event.type === 'answer_status') answerStatus = event;
     if (event.type === 'error') {
       error.textContent = event.message;
       error.hidden = false;

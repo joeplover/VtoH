@@ -3,6 +3,7 @@
 const byId = (id) => document.getElementById(id);
 const transcripts = new Map();
 const answers = new Map();
+let answerStatus = null;
 const selected = new Set();
 let bilingual = false;
 let phase = 'idle';
@@ -140,9 +141,29 @@ function renderAnswers(openAnswer, collapseAnswer) {
     card.append(node('summary', answer.question), body);
     return card;
   });
-  stream.replaceChildren(...(cards.length ? cards : [
-    node('p', '识别到完整问题后，答案会显示在这里。', 'empty'),
-  ]));
+  if (answerStatus?.state === 'generating' && answerStatus.conclusion) {
+    const progress = node('article', '', 'answer-card');
+    progress.append(
+      node('h3', answerStatus.question || '正在回答', 'answer-title'),
+      node('div', answerStatus.conclusion, 'answer-body'),
+    );
+    stream.replaceChildren(progress, ...cards);
+  } else {
+    stream.replaceChildren(...(cards.length ? cards : [
+      node('p', '识别到完整问题后，答案会显示在这里。', 'empty'),
+    ]));
+  }
+  const state = byId('answer-state');
+  const statusText = {
+    queued: '已提交，等待生成',
+    generating: answerStatus?.conclusion ? '正在补全回答' : '正在生成回答',
+    waiting: '等待完整问题',
+    error: answerStatus?.message || '回答生成失败',
+    complete: '回答已完成',
+  }[answerStatus?.state] || '';
+  state.textContent = statusText;
+  state.toggleAttribute('data-busy', answerStatus?.state === 'queued' || answerStatus?.state === 'generating');
+  state.toggleAttribute('data-error', answerStatus?.state === 'error');
 }
 
 function switchView(value) {
@@ -189,6 +210,7 @@ function applyEvent(event) {
     case 'snapshot':
       transcripts.clear();
       answers.clear();
+      answerStatus = event.answer_status ?? null;
       for (const row of event.transcripts) transcripts.set(row.id, row);
       for (const answer of event.answers) answers.set(answer.id, answer);
       for (const id of selected) if (!transcripts.has(id)) selected.delete(id);
@@ -208,6 +230,10 @@ function applyEvent(event) {
       renderAnswers(showLatest ? event.id : undefined, showLatest ? previous : undefined);
       return;
     }
+    case 'answer_status':
+      answerStatus = event;
+      renderAnswers();
+      return;
     case 'pair':
       pairImage = event.image;
       pairUrl = event.url;
@@ -287,8 +313,15 @@ byId('copy-pair').addEventListener('click', async () => {
   }
 });
 byId('answer').addEventListener('click', async () => {
+  if (!['queued', 'generating'].includes(answerStatus?.state)) {
+    answerStatus = {state: 'queued'};
+    renderAnswers();
+  }
   const result = await api.answer([...selected]);
-  if (result.error) notice(result.error, true);
+  if (result.error) {
+    answerStatus = {state: 'error', message: result.error};
+    renderAnswers();
+  }
 });
 byId('answer-focus').addEventListener('click', () => {
   const expanded = byId('panes').classList.toggle('answer-focus');

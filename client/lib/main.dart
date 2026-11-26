@@ -107,6 +107,7 @@ class _WorkspaceState extends State<Workspace> {
   final _key = TextEditingController();
   final _transcripts = <String, Event>{};
   final _answers = <String, Event>{};
+  Event? _answerStatus;
   final _selected = <String>{};
   final _sources = <String, String>{};
   String _source = 'mic';
@@ -174,8 +175,9 @@ class _WorkspaceState extends State<Workspace> {
   Future<void> _loadOverlayFont() async {
     try {
       final size = await _workspace.invokeMethod<int>('overlayFont');
-      if (mounted && _overlayFonts.containsKey(size))
+      if (mounted && _overlayFonts.containsKey(size)) {
         setState(() => _overlayFontSize = size!);
+      }
     } on PlatformException {
       _message('无法读取字幕字号。');
     }
@@ -418,6 +420,7 @@ class _WorkspaceState extends State<Workspace> {
           _answers
             ..clear()
             ..addEntries(_indexed(event['answers'] as List<dynamic>));
+          _answerStatus = event['answer_status'] as Event?;
           _selected.retainAll(_transcripts.keys);
         case 'capture':
           _remoteActive = event['recording'] as bool;
@@ -431,6 +434,8 @@ class _WorkspaceState extends State<Workspace> {
         case 'answer':
           _answers[event['id'] as String] = event;
           if (_answers.length > 120) _answers.remove(_answers.keys.first);
+        case 'answer_status':
+          _answerStatus = event;
         case 'error':
           _notice = event['message'] as String;
         case 'expired':
@@ -462,6 +467,7 @@ class _WorkspaceState extends State<Workspace> {
     if (socket != null) await socket.close();
     _transcripts.clear();
     _answers.clear();
+    _answerStatus = null;
     _selected.clear();
     unawaited(_updateOverlayHistory([], reset: true));
     unawaited(_updateOverlay());
@@ -686,6 +692,9 @@ class _WorkspaceState extends State<Workspace> {
     socket.add(jsonEncode({'type': 'answer', 'ids': _selected.toList()}));
     setState(() {
       _selected.clear();
+      if (!['queued', 'generating'].contains(_answerStatus?['state'])) {
+        _answerStatus = {'state': 'queued'};
+      }
       if (MediaQuery.sizeOf(context).width < 760) _view = WorkspaceView.answers;
     });
   }
@@ -824,9 +833,9 @@ class _WorkspaceState extends State<Workspace> {
                 const PopupMenuDivider(),
                 for (final font in _overlayFonts.entries)
                   CheckedPopupMenuItem(
-                    value: 'font-' + font.key.toString(),
+                    value: 'font-${font.key}',
                     checked: _overlayFontSize == font.key,
-                    child: Text('字号' + font.value),
+                    child: Text('字号${font.value}'),
                   ),
               ],
             ),
@@ -1232,12 +1241,55 @@ class _WorkspaceState extends State<Workspace> {
   Widget _answerPanel() {
     final theme = Theme.of(context);
     final answers = _answers.values.toList().reversed.toList();
+    final preview = _answerStatus?['state'] == 'generating'
+        ? (_answerStatus?['conclusion'] as String? ?? '')
+        : '';
     return _surface(
       children: [
-        Text('问答', style: theme.textTheme.titleLarge),
-        if (answers.isEmpty)
-          _empty(Icons.question_answer_outlined, '等待完整的问题。')
-        else ...[
+        Row(
+          children: [
+            Expanded(child: Text('问答', style: theme.textTheme.titleLarge)),
+            if (_answerStatus?['state'] == 'queued' ||
+                _answerStatus?['state'] == 'generating')
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _answerStatus?['conclusion']?.toString().isNotEmpty == true
+                        ? '正在补全回答'
+                        : _answerStatus?['state'] == 'queued'
+                        ? '已提交，等待生成'
+                        : '正在生成回答',
+                    style: theme.textTheme.labelMedium,
+                  ),
+                ],
+              )
+            else if (_answerStatus?['state'] == 'waiting')
+              Text('等待完整问题', style: theme.textTheme.labelMedium)
+            else if (_answerStatus?['state'] == 'complete')
+              Text('回答已完成', style: theme.textTheme.labelMedium)
+            else if (_answerStatus?['state'] == 'error')
+              Text(
+                _answerStatus?['message']?.toString() ?? '回答生成失败',
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+          ],
+        ),
+        if (preview.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Text(preview, style: theme.textTheme.titleSmall),
+        ],
+        if (answers.isEmpty && preview.isEmpty)
+          _empty(Icons.question_answer_outlined, '等待完整的问题。'),
+        if (answers.isNotEmpty) ...[
           const SizedBox(height: 14),
           Text(
             answers.first['question'] as String,

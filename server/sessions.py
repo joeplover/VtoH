@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import re
 import secrets
 from collections import OrderedDict
 from itertools import count
@@ -34,10 +36,16 @@ class Session:
         self.job_order = count()
         self.worker: asyncio.Task | None = None
         self.pending: tuple[str, ...] = ()
+        self.answer_status: Event | None = None
 
     def snapshot(self) -> Event:
         return {"type": "snapshot", "transcripts": list(self.transcripts.values()),
-                "answers": list(self.answers.values()), "recording": self.recording}
+                "answers": list(self.answers.values()), "recording": self.recording,
+                "answer_status": self.answer_status}
+
+    def report_answer(self, event: Event) -> None:
+        self.answer_status = event
+        self.publish(event)
 
     def publish(self, event: Event) -> None:
         self.updated = monotonic()
@@ -149,6 +157,11 @@ class Session:
             self.publish({"type": "error", "message": "待回答内容过多，请稍后手动重试。"})
             return
         self.jobs.put_nowait((0 if manual else 1, next(self.job_order), selected_ids, context, selected))
+        if self.answer_status is None or self.answer_status["state"] not in ("queued", "generating"):
+            self.report_answer({
+                "type": "answer_status", "id": f"answer-{selected_ids[-1]}",
+                "state": "queued", "transcript_ids": list(selected_ids),
+            })
         if self.worker is None or self.worker.done():
             self.worker = asyncio.create_task(self.answer_jobs())
 
@@ -156,6 +169,8 @@ class Session:
         while not self.jobs.empty():
             priority, _, ids, context, selected = self.jobs.get_nowait()
             manual = priority == 0
+            status = {"type": "answer_status", "id": f"answer-{ids[-1]}",
+                      "transcript_ids": list(ids)}
             cached = self.answers.get(ids)
             if cached is None and len(ids) == 1:
                 cached = next((answer for keys, answer in reversed(self.answers.items()) if keys[-1] == ids[0]), None)
@@ -164,19 +179,40 @@ class Session:
                     self.publish(cached)
                 else:
                     self.pending = ()
+                self.report_answer({**status, "state": "complete"})
                 continue
+            question = selected[:240]
+            self.report_answer({**status, "state": "generating", "question": question})
             try:
-                decision = await self.model.decide(context, selected, manual)
+                def progress(raw: str) -> None:
+                    match = re.search(r'(?:[{,]\s*)"conclusion"\s*:\s*"((?:\\.|[^"\\])*)', raw)
+                    if not match:
+                        return
+                    try:
+                        conclusion = json.loads(f'"{match.group(1)}"')
+                    except json.JSONDecodeError:
+                        return
+                    if conclusion.strip() and conclusion != self.answer_status.get("conclusion"):
+                        self.report_answer({**status, "state": "generating",
+                                            "question": question, "conclusion": conclusion})
+
+                stream = getattr(self.model, "decide_stream", None)
+                if stream is None:
+                    decision = await self.model.decide(context, selected, manual)
+                else:
+                    decision = await asyncio.wait_for(stream(context, selected, manual, progress), timeout=25)
             except Exception as error:
                 logger.warning("answer request failed: %s", type(error).__name__)
-                self.publish({"type": "error", "message": "问答服务暂不可用，请稍后点「回答这段」重试。"})
+                self.report_answer({**status, "state": "error", "message": "回答生成失败，请稍后重试。"})
                 continue
             if not manual and decision.pending:
                 self.pending = (*self.pending, *ids)[-5:]
+                self.report_answer({**status, "state": "waiting"})
                 continue
             if not decision.conclusion.strip():
                 if not manual:
                     self.pending = ()
+                self.report_answer({**status, "state": "skipped" if not manual else "error"})
                 continue
             if not manual:
                 ids = (*self.pending, *ids)
@@ -190,3 +226,4 @@ class Session:
             if len(self.answers) > 120:
                 self.answers.popitem(last=False)
             self.publish(event)
+            self.report_answer({**status, "state": "complete"})

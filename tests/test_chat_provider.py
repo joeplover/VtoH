@@ -27,3 +27,27 @@ def test_default_answer_uses_fast_flash_json(monkeypatch):
                 await provider.decide("", "怎么做？", True)
 
     asyncio.run(run())
+
+
+def test_flash_answer_stream_reports_json_deltas(monkeypatch):
+    monkeypatch.setenv("VTOH_CHAT_KEY", "test")
+
+    def reply(request):
+        assert json.loads(request.content)["stream"] is True
+        events = [
+            {"choices": [{"delta": {"content": '{"conclusion":"先确认'}}]},
+            {"choices": [{"delta": {"content": '目标","points":[]}'}}]},
+        ]
+        body = "".join(f"data: {json.dumps(event)}\n\n" for event in events) + "data: [DONE]\n\n"
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    async def run():
+        updates = []
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+            result = await ChatCompletions(client).decide_stream(
+                "", "怎么开始？", True, lambda value: updates.append(value),
+            )
+        assert result.conclusion == "先确认目标"
+        assert updates[-1] == '{"conclusion":"先确认目标","points":[]}'
+
+    asyncio.run(run())

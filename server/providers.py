@@ -3,11 +3,11 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterable, AsyncIterator
-from typing import Protocol
+from typing import Callable, Protocol
 from uuid import uuid4
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from websockets.asyncio.client import connect
 
 logger = logging.getLogger("vtoh")
@@ -18,6 +18,11 @@ class Decision(BaseModel):
     question: str = ""
     conclusion: str = ""
     points: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("points", mode="before")
+    @classmethod
+    def limit_points(cls, value):
+        return value[:3] if isinstance(value, list) else value
 
 
 class Answers(Protocol):
@@ -70,6 +75,36 @@ class ChatCompletions:
         await self.client.aclose()
 
     async def decide(self, context: str, selected: str, manual: bool) -> Decision:
+        url, options = self._request(context, selected, manual)
+        response = await self.client.post(url, **options)
+        response.raise_for_status()
+        return Decision.model_validate_json(response.json()["choices"][0]["message"]["content"])
+
+    async def decide_stream(
+        self, context: str, selected: str, manual: bool,
+        on_delta: Callable[[str], None],
+    ) -> Decision:
+        parts: list[str] = []
+        url, options = self._request(context, selected, manual, stream=True)
+        async with self.client.stream("POST", url, **options) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                    content = chunk["choices"][0].get("delta", {}).get("content") or ""
+                except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+                    continue
+                if isinstance(content, str) and content:
+                    parts.append(content)
+                    on_delta("".join(parts))
+        return Decision.model_validate_json("".join(parts))
+
+    def _request(self, context: str, selected: str, manual: bool, *, stream: bool = False):
         key = os.getenv("VTOH_CHAT_KEY")
         if not key:
             raise RuntimeError("Chat API key missing")
@@ -91,26 +126,27 @@ class ChatCompletions:
             thinking = {"enable_thinking": False}
         elif model.startswith("deepseek-v4"):
             thinking = {"thinking": {"type": "disabled"}}
-        response = await self.client.post(
+        return (
             f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={
-                "model": model,
-                "response_format": {"type": "json_object"},
-                **thinking,
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(
-                        {"context": context, "selected": selected, "manual": manual},
-                        ensure_ascii=False,
-                    )},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 400,
+            {
+                "headers": {"Authorization": f"Bearer {key}"},
+                "json": {
+                    "model": model,
+                    "response_format": {"type": "json_object"},
+                    "stream": stream,
+                    **thinking,
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(
+                            {"context": context, "selected": selected, "manual": manual},
+                            ensure_ascii=False,
+                        )},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 400,
+                },
             },
         )
-        response.raise_for_status()
-        return Decision.model_validate_json(response.json()["choices"][0]["message"]["content"])
 
 
 class DashScopeSpeech:

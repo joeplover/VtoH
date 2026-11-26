@@ -45,6 +45,33 @@ def test_manual_question_moves_ahead_of_queued_auto_questions():
     asyncio.run(run())
 
 
+def test_answer_status_is_published_before_and_after_generation():
+    class StreamingAnswers:
+        async def decide_stream(self, context, selected, manual, progress):
+            progress('{"conclusion": "先确认')
+            assert session.snapshot()["answer_status"]["conclusion"] == "先确认"
+            progress('{"conclusion": "先确认目标","points":[]}')
+            return Decision(conclusion="先确认目标")
+
+    async def run():
+        nonlocal session
+        session = Session(StreamingAnswers())
+        queue = asyncio.Queue()
+        session.subscribers.add(queue)
+        session.put_transcript("1", "怎么确认需求？", True)
+        while (await queue.get())["type"] != "answer_status":
+            pass
+        await session.worker
+        events = []
+        while not queue.empty():
+            events.append(queue.get_nowait())
+        states = [event["state"] for event in events if event["type"] == "answer_status"]
+        assert states == ["generating", "generating", "generating", "complete"]
+
+    session = None
+    asyncio.run(run())
+
+
 def test_final_transcript_translation_is_shared_and_saved():
     class Translator:
         def __init__(self):
@@ -65,15 +92,17 @@ def test_final_transcript_translation_is_shared_and_saved():
         session.put_transcript("1", "会议现在开始。", True, "en")
         await session.translation_worker
         for queue in (owner, viewer):
-            assert queue.get_nowait()["final"] is False
-            assert queue.get_nowait()["translation_status"] == "pending"
-            translated = queue.get_nowait()
+            events = [queue.get_nowait() for _ in range(queue.qsize())]
+            events = [event for event in events if event["type"] == "transcript"]
+            assert events[0]["final"] is False
+            assert events[0]["translation_status"] == "pending"
+            translated = events[-1]
             assert translated["id"] == "1"
             assert "".join(translated["text_lines"]) == translated["text"]
             assert translated["translation"] == "The meeting starts now."
             assert "".join(translated["translation_lines"]) == translated["translation"]
             assert translated["translation_language"] == "en"
-        assert session.snapshot()["transcripts"] == [translated]
+            assert session.snapshot()["transcripts"] == [translated]
         assert translator.calls == [("会议现在开始。", "English")]
 
     asyncio.run(run())
@@ -134,13 +163,19 @@ def test_stream_pair_and_deduplicate():
                     assert partial["id"] == final["id"]
                     assert partial["final"] is False and final["final"] is True
                     audio.send_bytes("怎么确认需求？".encode("utf-16-le"))
-                    viewer.receive_json()
-                    question = viewer.receive_json()
-                    answer = viewer.receive_json()
+                    event = viewer.receive_json()
+                    while event["type"] != "answer":
+                        if event["type"] == "transcript" and event["final"]:
+                            question = event
+                        event = viewer.receive_json()
+                    answer = event
                     assert answer["type"] == "answer"
                     assert answer["points"] == ["先确认目标"]
                     control.send_json({"type": "answer", "ids": [question["id"]]})
-                    assert viewer.receive_json() == answer
+                    duplicate = viewer.receive_json()
+                    while duplicate["type"] != "answer":
+                        duplicate = viewer.receive_json()
+                    assert duplicate == answer
                     audio.send_json({"type": "stop"})
                     assert audio.receive_json()["type"] == "stopped"
             assert len(answers.calls) == 2
